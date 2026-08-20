@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimLife — Memory Simulation</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+    --magenta: #bc8cff; --cyan: #39d353;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; overflow: hidden; height: 100vh; }
+  .app { display: grid; grid-template-columns: 1fr 340px; grid-template-rows: 48px 1fr; height: 100vh; gap: 0; }
+
+  /* Header */
+  .header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .header h1 { font-size: 16px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+  .header .stat { color: var(--dim); white-space: nowrap; }
+  .header .stat b { color: var(--text); }
+  .header .controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .header button { background: var(--border); color: var(--text); border: none; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+  .header button:hover { background: #484f58; }
+  .header button.active { background: var(--accent); color: #000; }
+  .header label { color: var(--dim); font-size: 11px; }
+  .header select { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+
+  /* Main area */
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+  .world-wrap { flex: 1; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #000; }
+  #worldCanvas { image-rendering: pixelated; cursor: crosshair; }
+  .world-tooltip { position: absolute; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 11px; pointer-events: none; display: none; z-index: 10; max-width: 200px; }
+  .world-tooltip .tt-name { font-weight: 700; margin-bottom: 2px; }
+  .world-tooltip .tt-line { color: var(--dim); }
+  .legend { position: absolute; bottom: 8px; left: 8px; background: rgba(13,17,23,0.9); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 11px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .legend .lg { display: flex; align-items: center; gap: 3px; }
+  .legend .lg-char { font-weight: 700; }
+
+  /* Chart */
+  .chart-wrap { height: 140px; background: var(--surface); border-top: 1px solid var(--border); padding: 8px 12px; flex-shrink: 0; }
+  .chart-wrap h3 { font-size: 11px; color: var(--dim); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  #popCanvas, #memCanvas { width: 100%; height: 100px; }
+
+  /* Sidebar */
+  .sidebar { background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .sidebar h3 { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; padding: 10px 14px 6px; }
+  .sidebar .section { border-bottom: 1px solid var(--border); }
+  .pop-legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 14px 10px; }
+  .pop-legend .item { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+  .pop-legend .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .events { max-height: 140px; overflow-y: auto; padding: 6px 14px 10px; }
+  .events .ev { color: var(--dim); font-size: 11px; padding: 1px 0; line-height: 1.4; }
+  .events .ev.kill { color: var(--red); }
+  .events .ev.birth { color: var(--green); }
+  .events .ev.share { color: var(--cyan); }
+  .inspector { flex: 1; overflow-y: auto; padding: 0 14px 14px; }
+  .inspector .empty { color: var(--dim); font-style: italic; padding: 20px 0; text-align: center; }
+  .inspector .ent-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .inspector .ent-char { font-size: 24px; font-weight: 700; width: 36px; text-align: center; }
+  .inspector .ent-info .name { font-size: 14px; font-weight: 700; }
+  .inspector .ent-info .sub { color: var(--dim); font-size: 12px; }
+  .bar-wrap { margin: 4px 0; }
+  .bar-label { font-size: 11px; color: var(--dim); display: flex; justify-content: space-between; }
+  .bar-track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 2px; }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.2s; }
+  .traits-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; font-size: 11px; margin: 6px 0; }
+  .traits-grid .trait { display: flex; justify-content: space-between; }
+  .traits-grid .trait-name { color: var(--dim); }
+  .mem-list { margin-top: 6px; }
+  .mem-item { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; font-size: 11px; border-bottom: 1px solid var(--border); }
+  .mem-icon { width: 16px; text-align: center; flex-shrink: 0; font-size: 10px; padding-top: 1px; }
+  .mem-icon.danger { color: var(--red); }
+  .mem-icon.food { color: var(--green); }
+  .mem-icon.social { color: var(--accent); }
+  .mem-icon.migration { color: var(--yellow); }
+  .mem-icon.mate { color: var(--magenta); }
+  .mem-body { flex: 1; }
+  .mem-type { font-weight: 600; }
+  .mem-desc { color: var(--dim); font-size: 10px; }
+  .mem-bar { height: 3px; background: var(--border); border-radius: 2px; margin-top: 2px; overflow: hidden; }
+  .mem-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <h1>SimLife</h1>
+    <span class="stat">Tick <b id="hTick">0</b></span>
+    <span class="stat">Day <b id="hDay">0</b></span>
+    <span class="stat" id="hSeason">Spring</span>
+    <span class="stat" id="hTime">Day</span>
+    <span class="stat">Pop <b id="hPop">0</b></span>
+    <div class="controls">
+      <button id="btnPause" onclick="togglePause()">Pause</button>
+      <button onclick="resetSim()">Reset</button>
+      <label>Speed</label>
+      <select id="speedSel" onchange="setSpeed(this.value)">
+        <option value="200">Slow</option>
+        <option value="80" selected>Normal</option>
+        <option value="30">Fast</option>
+        <option value="5">Turbo</option>
+      </select>
+    </div>
+  </div>
+  <div class="main">
+    <div class="world-wrap">
+      <canvas id="worldCanvas"></canvas>
+      <div class="world-tooltip" id="tooltip"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="chart-wrap" style="display:flex;gap:0;flex-direction:column;">
+      <div style="display:flex;flex:1;min-height:0;">
+        <div style="flex:1;">
+          <h3>Population Over Time</h3>
+          <canvas id="popCanvas"></canvas>
+        </div>
+        <div style="flex:1;">
+          <h3>Memory Stats Over Time</h3>
+          <canvas id="memCanvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="sidebar">
+    <div class="section">
+      <h3>Population</h3>
+      <div class="pop-legend" id="popLegend"></div>
+    </div>
+    <div class="section">
+      <h3>Events</h3>
+      <div class="events" id="eventLog"></div>
+    </div>
+    <div class="section" style="border-bottom:none;">
+      <h3>Entity Inspector</h3>
+      <div class="inspector" id="inspector">
+        <div class="empty">Click any creature to inspect its memories.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ================================================================
+// SimLife — Pure client-side simulation with memory
+// ================================================================
+
+const SPECIES_COLORS = {
+  RABBIT: '#3fb950', DEER: '#d29922', WOLF: '#f85149',
+  FOX: '#bc8cff', OWL: '#39d353',
+};
+const TERRAIN_BASE = { 1: [26,35,50], 2: [10,22,40], 3: [13,40,24], 4: [42,26,10] };
+const TERRAIN_FOOD = { 1: [30,58,30], 2: [10,30,58], 3: [13,58,26], 4: [58,42,10] };
+
+// ── Seeded Random ────────────────────────────────────────────────
+class RNG {
+  constructor(seed) { this.s = seed | 0 || 1; }
+  next() { this.s ^= this.s << 13; this.s ^= this.s >> 17; this.s ^= this.s << 5; return ((this.s >>> 0) / 4294967296); }
+  range(a, b) { return a + this.next() * (b - a); }
+  irange(a, b) { return Math.floor(this.range(a, b)); }
+  gauss(m, s) { let u = 0, v = 0; while (u === 0) u = this.next(); v = this.next(); return m + s * Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v); }
+}
+
+// ── Terrain generation ───────────────────────────────────────────
+function genTerrain(w, h, rng) {
+  let raw = Array.from({length: h}, () => Array.from({length: w}, () => rng.next()));
+  for (let pass = 0; pass < 4; pass++) {
+    const n = raw.map(r => [...r]);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let sum = 0, cnt = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const ny = y+dy, nx = x+dx;
+        if (ny >= 0 && ny < h && nx >= 0 && nx < w) { sum += raw[ny][nx]; cnt++; }
+      }
+      n[y][x] = sum / cnt;
+    }
+    raw = n;
+  }
+  return raw.map(row => row.map(v => v < 0.25 ? 2 : v < 0.55 ? 1 : v < 0.80 ? 3 : 4));
+}
+
+// ── World ────────────────────────────────────────────────────────
+const W = 50, H = 25;
+const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
+const SEASON_FOOD = [1.2, 1.0, 0.7, 0.3];
+const TERRAIN_FOOD_MAX = { 1: 5, 2: 0, 3: 10, 4: 8 };
+const TERRAIN_FOOD_RATE = { 1: 0.15, 2: 0, 3: 0.30, 4: 0.10 };
+const TERRAIN_MOVE_COST = { 1: 1, 2: 999, 3: 1.5, 4: 2.0 };
+const DAY_LEN = 40;
+
+let rng = new RNG(Date.now());
+let terrain, food, entities = [], tick = 0, day = 0, season = 0, tod = 0;
+let selectedId = null, paused = false, tickInterval = null, speed = 80;
+const popHistory = { RABBIT: [], DEER: [], WOLF: [], FOX: [], OWL: [] };
+const memHist = { avgStrength: [], avgCount: [], food: [], danger: [], social: [], migration: [] };
+let eventLog = [];
+
+function initWorld() {
+  rng = new RNG(Date.now());
+  terrain = genTerrain(W, H, rng);
+  food = Array.from({length: H}, (_, y) =>
+    Array.from({length: W}, (_, x) => terrain[y][x] === 2 ? 0 : rng.range(0, TERRAIN_FOOD_MAX[terrain[y][x]] * 0.6))
+  );
+  entities = [];
+  tick = 0; day = 0; season = 0; tod = 0;
+  eventLog = [];
+  Object.keys(popHistory).forEach(k => popHistory[k] = []);
+  Object.keys(memHist).forEach(k => memHist[k] = []);
+  Entity._nextId = 0;
+
+  const configs = [
+    ['RABBIT', 15], ['DEER', 8], ['WOLF', 5], ['FOX', 4], ['OWL', 3]
+  ];
+  for (const [sp, cnt] of configs) {
+    for (let i = 0; i < cnt; i++) {
+      let x, y, att = 0;
+      do { x = rng.irange(1, W-1); y = rng.irange(1, H-1); att++; } while (terrain[y][x] === 2 && att < 50);
+      if (terrain[y][x] !== 2) entities.push(new Entity(sp, x, y, rng));
+    }
+  }
+}
+
+// ── Memory System ────────────────────────────────────────────────
+class Memory {
+  constructor(type, content, valence = 0) {
+    this.type = type; this.content = content;
+    this.strength = 1.0; this.valence = Math.max(-1, Math.min(1, valence));
+    this.reinforced = 0; this.createdTick = tick;
+  }
+  decay(rate) {
+    const eff = rate * (1.0 - 0.5 * Math.abs(this.valence));
+    this.strength *= 1.0 - eff;
+  }
+  get alive() { return this.strength > 0.05; }
+}
+
+class MemoryBank {
+  constructor(intelligence) {
+    this.capacity = 12 + Math.round(intelligence * 4);
+    this.memories = [];
+    this.decayRate = 0.035 / (0.5 + intelligence * 0.3);
+  }
+  encode(type, content, valence = 0) {
+    const sim = new Memory(type, content, valence);
+    // find similar to reinforce
+    for (const m of this.memories) {
+      if (m.type !== type) continue;
+      const c1 = m.content, c2 = content;
+      if (c1.x !== undefined && c1.x === c2.x && c1.y === c2.y) { m.strength = Math.min(1, m.strength + 0.3); m.reinforced++; return m; }
+      if (c1.entity_id !== undefined && c1.entity_id === c2.entity_id) { m.strength = Math.min(1, m.strength + 0.3); m.reinforced++; return m; }
+    }
+    if (this.memories.length >= this.capacity) {
+      this.memories.sort((a, b) => a.strength - b.strength);
+      this.memories.shift();
+    }
+    this.memories.push(sim);
+    return sim;
+  }
+  recall(type, minStr = 0.1) { return this.memories.filter(m => m.type === type && m.strength >= minStr).sort((a, b) => b.strength - a.strength); }
+  fearAt(x, y) {
+    const d = this.recall('SPATIAL_DANGER', 0.15);
+    const near = d.filter(m => Math.abs(m.content.x - x) + Math.abs(m.content.y - y) <= 8);
+    return near.length ? near.reduce((s, m) => s + m.strength * Math.abs(m.valence), 0) / near.length : 0;
+  }
+  tick_() { for (const m of this.memories) m.decay(this.decayRate); this.memories = this.memories.filter(m => m.alive); }
+  shareWith(other, maxN = 2) {
+    const sorted = [...this.memories].sort((a, b) => b.strength - a.strength);
+    let shared = 0;
+    for (const m of sorted) {
+      if (shared >= maxN) break;
+      if (m.type === 'MATE') continue;
+      if (other.encode(m.type, {...m.content}, m.valence)) shared++;
+    }
+    return shared;
+  }
+}
+
+// ── Entity ───────────────────────────────────────────────────────
+const SP_CFG = {
+  RABBIT: { char: 'r', name: 'Rabbit', maxE: 80, maxAge: 300, spd: 2, str: 0.3, int: 0.6, soc: 0.7, con: 0.5, diet: 'herb', repE: 55, repCh: 0.03 },
+  DEER:   { char: 'D', name: 'Deer',   maxE: 120, maxAge: 500, spd: 1.5, str: 0.5, int: 0.8, soc: 0.8, con: 0.7, diet: 'herb', repE: 70, repCh: 0.02 },
+  WOLF:   { char: 'W', name: 'Wolf',   maxE: 150, maxAge: 600, spd: 1.8, str: 1.0, int: 1.2, soc: 0.9, con: 0.8, diet: 'carn', repE: 90, repCh: 0.015 },
+  FOX:    { char: 'F', name: 'Fox',    maxE: 100, maxAge: 450, spd: 2.2, str: 0.6, int: 1.4, soc: 0.4, con: 0.6, diet: 'omni', repE: 60, repCh: 0.025 },
+  OWL:    { char: 'O', name: 'Owl',    maxE: 90, maxAge: 550, spd: 1.2, str: 0.5, int: 1.6, soc: 0.3, con: 0.5, diet: 'omni', repE: 55, repCh: 0.02 },
+};
+
+class Entity {
+  static _nextId = 0;
+  constructor(species, x, y, rng, parentTraits) {
+    this.id = ++Entity._nextId;
+    this.species = species;
+    const c = SP_CFG[species];
+    this.char = c.char; this.diet = c.diet; this.maxAge = c.maxAge;
+    this.repE = c.repE; this.repCh = c.repCh;
+    this.x = x; this.y = y; this.rng = rng;
+    this.traits = {};
+    for (const k of ['str','int','soc','con','spd']) {
+      const base = parentTraits ? (parentTraits[k] || c[k]) : c[k];
+      this.traits[k] = Math.max(0.1, base * (1 + rng.gauss(0, 0.08)));
+    }
+    this.energy = c.maxE; this.maxE = c.maxE; this.age = 0; this.health = 1; this.alive = true;
+    this.memory = new MemoryBank(this.traits.int);
+    this.kills = 0; this.children = 0; this.foodEaten = 0; this.sharedMem = 0;
+    this._wanderCd = 0;
+  }
+  dist(o) { return Math.abs(this.x - o.x) + Math.abs(this.y - o.y); }
+  sign(v) { return v > 0 ? 1 : v < 0 ? -1 : 0; }
+  passable(x, y) { return x >= 0 && x < W && y >= 0 && y < H && terrain[y][x] !== 2; }
+  tryMove(dx, dy) {
+    const nx = this.x + dx, ny = this.y + dy;
+    if (!this.passable(nx, ny)) return false;
+    const cost = TERRAIN_MOVE_COST[terrain[ny][nx]] * 1.5;
+    if (this.energy < cost) return false;
+    this.x = nx; this.y = ny; this.energy -= cost;
+    return true;
+  }
+  moveToward(tx, ty) {
+    const dx = this.sign(tx - this.x), dy = this.sign(ty - this.y);
+    for (const [ddx, ddy] of [[dx,dy],[dx,0],[0,dy],[-dx,dy],[dx,-dy]]) {
+      if ((ddx || ddy) && this.tryMove(ddx, ddy)) return true;
+    }
+    return false;
+  }
+  isThreat(o) {
+    if (this.diet === 'herb') return (o.diet === 'carn' || o.diet === 'omni') && o.traits.str > this.traits.str * 0.5;
+    if (this.diet === 'carn') return o.species === 'WOLF' && o.id !== this.id;
+    return o.species === 'WOLF' && o.traits.str > this.traits.str;
+  }
+  isPrey(o) {
+    if (this.diet === 'carn') return o.diet === 'herb';
+    if (this.diet === 'omni') return o.diet === 'herb' && o.traits.str < this.traits.str;
+    return false;
+  }
+  isNight() { return tod < 0.2 || tod > 0.8; }
+
+  act(nearby) {
+    this.age++;
+    this.energy -= 0.5;
+    if (this.age > this.maxAge * 0.7) this.health -= 0.002;
+    if (this.age > this.maxAge * 0.9) this.energy -= 1;
+    if (this.isNight() && this.species !== 'OWL') this.energy -= 0.3;
+    if (this.energy <= 0 || this.health <= 0) { this.alive = false; return; }
+
+    // Encode memories
+    this._updateMemory(nearby);
+    // Decide
+    this._decide(nearby);
+  }
+
+  _updateMemory(nearby) {
+    const c = food[this.y][this.x];
+    if (c > 1) this.memory.encode('SPATIAL_FOOD', {x: this.x, y: this.y, q: c}, 0.3);
+    // Nearby food
+    for (let dy = -5; dy <= 5; dy++) for (let dx = -5; dx <= 5; dx++) {
+      const nx = this.x+dx, ny = this.y+dy;
+      if (nx >= 0 && nx < W && ny >= 0 && ny < H && food[ny][nx] > 3) {
+        this.memory.encode('SPATIAL_FOOD', {x: nx, y: ny, q: food[ny][nx]}, 0.2);
+      }
+    }
+    // Territory
+    let density = 0, cnt = 0;
+    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+      const nx = this.x+dx, ny = this.y+dy;
+      if (nx >= 0 && nx < W && ny >= 0 && ny < H) { density += food[ny][nx]; cnt++; }
+    }
+    density /= (cnt || 1);
+    if (density > 2.5) this.memory.encode('MIGRATION', {x: this.x, y: this.y, density}, 0.4);
+
+    for (const o of nearby) {
+      if (o.id === this.id || !o.alive) continue;
+      if (!this.memory.recall('SOCIAL_ENEMY', 0.2).find(m => m.content.entity_id === o.id) &&
+          !this.memory.recall('SOCIAL_FRIEND', 0.2).find(m => m.content.entity_id === o.id)) {
+        this.memory.encode('SOCIAL_FRIEND', {entity_id: o.id, species: o.species, lx: o.x, ly: o.y}, 0.1);
+      }
+    }
+  }
+
+  _decide(nearby) {
+    // 1. Flee
+    const threats = nearby.filter(o => o.id !== this.id && this.isThreat(o) && this.dist(o) < 4 + Math.round(this.traits.int * 2));
+    if (threats.length || this.memory.fearAt(this.x, this.y) > 0.3) {
+      if (threats.length) {
+        const worst = threats.reduce((a, b) => a.traits.str < b.traits.str ? a : b);
+        this.memory.encode('SPATIAL_DANGER', {x: worst.x, y: worst.y, tid: worst.id}, -0.7);
+        this.tryMove(this.sign(this.x - worst.x), this.sign(this.y - worst.y));
+        return;
+      }
+      // Flee from remembered danger
+      const mig = this.memory.recall('MIGRATION', 0.1).find(m => Math.abs(m.content.x-this.x)+Math.abs(m.content.y-this.y) > 3);
+      if (mig) this.moveToward(mig.content.x, mig.content.y);
+      return;
+    }
+
+    // 2. Hunt
+    if (this.diet === 'carn' || this.diet === 'omni') {
+      const prey = nearby.filter(o => this.isPrey(o) && this.dist(o) < 6);
+      if (prey.length) {
+        const target = prey.reduce((a, b) => this.dist(a) < this.dist(b) ? a : b);
+        if (this.dist(target) <= 1) {
+          const dmg = this.traits.str * 2 * (this.energy / this.maxE) * (0.8 + this.rng.next() * 0.4);
+          target.energy -= dmg * 3; target.health -= dmg * 0.1;
+          this.memory.encode('SPATIAL_DANGER', {x: target.x, y: target.y, tid: this.id}, -0.8);
+          if (target.energy <= 0 || target.health <= 0) {
+            target.alive = false; this.energy = Math.min(this.maxE, this.energy + 40); this.kills++;
+            eventLog.push({ type: 'kill', text: `${this.char}#${this.id} killed ${target.char}#${target.id}` });
+          }
+          return;
+        }
+        this.moveToward(target.x, target.y);
+        return;
+      }
+    }
+
+    // 3. Forage
+    const cell = food[this.y][this.x];
+    if (cell > 0.5 && this.energy < this.maxE * 0.9) {
+      const amt = Math.min(cell, 3);
+      food[this.y][this.x] -= amt;
+      this.energy = Math.min(this.maxE, this.energy + amt * 15);
+      this.foodEaten += amt;
+      this.memory.encode('SPATIAL_FOOD', {x: this.x, y: this.y, q: cell}, 0.5);
+      return;
+    }
+    if (this.energy < this.maxE * 0.7) {
+      const foods = this.memory.recall('SPATIAL_FOOD', 0.05).filter(m =>
+        Math.abs(m.content.x-this.x)+Math.abs(m.content.y-this.y) <= 15
+      );
+      if (foods.length) {
+        const best = foods.reduce((a, b) => (a.content.q*a.strength > b.content.q*b.strength) ? a : b);
+        if (best.content.x !== this.x || best.content.y !== this.y) {
+          this.moveToward(best.content.x, best.content.y);
+          return;
+        }
+      }
+    }
+
+    // 4. Socialize
+    if (this.traits.soc > 0.3) {
+      const allies = nearby.filter(o => o.id !== this.id && o.alive && this.dist(o) <= 2 &&
+        !this.memory.recall('SOCIAL_ENEMY', 0.3).find(m => m.content.entity_id === o.id));
+      if (allies.length) {
+        const target = allies[this.rng.irange(0, allies.length)];
+        const shared = this.memory.shareWith(target.memory, 2);
+        this.sharedMem += shared; target.sharedMem += shared;
+        if (shared > 0) eventLog.push({ type: 'share', text: `${this.char}#${this.id} shared ${shared} mem with ${target.char}#${target.id}` });
+        return;
+      }
+    }
+
+    // 5. Reproduce
+    if (this.energy > this.repE) {
+      const mates = nearby.filter(o => o.species === this.species && o.id !== this.id && o.alive && o.energy > o.repE && this.dist(o) <= 3);
+      if (mates.length && this.rng.next() < this.repCh) {
+        const mate = mates[this.rng.irange(0, mates.length)];
+        const cost = this.repE * 0.4;
+        this.energy -= cost; mate.energy -= cost;
+        const smarter = this.traits.int > mate.traits.int ? this : mate;
+        const child = new Entity(this.species, this.x + this.rng.irange(-1,1), this.y + this.rng.irange(-1,1), this.rng, smarter.traits);
+        if (!child.passable(child.x, child.y)) { child.x = this.x; child.y = this.y; }
+        child.energy = child.maxE * 0.6;
+        entities.push(child);
+        this.children++; mate.children++;
+        eventLog.push({ type: 'birth', text: `New ${child.char}#${child.id} born at (${child.x},${child.y})` });
+        return;
+      }
+    }
+
+    // 6. Migrate / Explore
+    const mig = this.memory.recall('MIGRATION', 0.1).find(m => Math.abs(m.content.x-this.x)+Math.abs(m.content.y-this.y) > 3);
+    if (mig && this.energy < this.maxE * 0.8) {
+      this.moveToward(mig.content.x, mig.content.y);
+      return;
+    }
+
+    // 7. Wander
+    if (this._wanderCd > 0) { this._wanderCd--; this.tryMove(this.rng.irange(-1,1), this.rng.irange(-1,1)); return; }
+    this._wanderCd = this.rng.irange(3, 8);
+    this.tryMove(this.rng.irange(-1,1), this.rng.irange(-1,1));
+  }
+}
+
+// ── Simulation Step ──────────────────────────────────────────────
+function simStep() {
+  tick++;
+  tod += 1/DAY_LEN;
+  if (tod >= 1) { tod -= 1; day++; if (day % 120 === 0) season = (season + 1) % 4; }
+  // Food regrowth
+  const sf = SEASON_FOOD[season];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (terrain[y][x] === 2) continue;
+    let g = TERRAIN_FOOD_RATE[terrain[y][x]] * sf;
+    if (!(tod < 0.2 || tod > 0.8)) g *= 1.5;
+    food[y][x] = Math.min(TERRAIN_FOOD_MAX[terrain[y][x]], food[y][x] + g);
+  }
+  // Entities
+  const toRemove = new Set();
+  for (const e of entities) {
+    if (!e.alive) { toRemove.add(e.id); continue; }
+    const nearby = entities.filter(o => o.alive && o.id !== e.id && e.dist(o) < 12);
+    e.act(nearby);
+    if (!e.alive) toRemove.add(e.id);
+  }
+  entities = entities.filter(e => !toRemove.has(e.id));
+  for (const e of entities) e.memory.tick_();
+  // Record pop
+  const pop = {};
+  for (const e of entities) pop[e.species] = (pop[e.species]||0) + 1;
+  for (const sp of Object.keys(popHistory)) popHistory[sp].push(pop[sp] || 0);
+  // Record memory stats
+  let totalStr = 0, memCnt = 0;
+  const typeCnt = { food: 0, danger: 0, social: 0, migration: 0 };
+  for (const e of entities) {
+    for (const m of e.memory.memories) {
+      totalStr += m.strength; memCnt++;
+      if (m.type === 'SPATIAL_FOOD') typeCnt.food++;
+      else if (m.type === 'SPATIAL_DANGER') typeCnt.danger++;
+      else if (m.type === 'MIGRATION') typeCnt.migration++;
+      else typeCnt.social++;
+    }
+  }
+  const ne = Math.max(entities.length, 1);
+  memHist.avgStrength.push(totalStr / Math.max(memCnt, 1));
+  memHist.avgCount.push(memCnt / ne);
+  for (const k of Object.keys(typeCnt)) memHist[k].push(typeCnt[k] / ne);
+}
+
+// ── Rendering ────────────────────────────────────────────────────
+const worldCanvas = document.getElementById('worldCanvas');
+const wCtx = worldCanvas.getContext('2d');
+const popCanvas = document.getElementById('popCanvas');
+const pCtx = popCanvas.getContext('2d');
+const memCanvas = document.getElementById('memCanvas');
+const mCtx = memCanvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+const inspector = document.getElementById('inspector');
+
+function render() {
+  renderHeader();
+  renderWorld();
+  renderChart();
+  renderMemChart();
+  renderPopLegend();
+  renderEvents();
+  if (selectedId) renderInspector(selectedId);
+}
+
+function renderHeader() {
+  document.getElementById('hTick').textContent = tick;
+  document.getElementById('hDay').textContent = day;
+  document.getElementById('hSeason').textContent = SEASONS[season];
+  document.getElementById('hPop').textContent = entities.length;
+  document.getElementById('hTime').textContent = (tod < 0.2 || tod > 0.8) ? 'Night' : 'Day';
+  const btn = document.getElementById('btnPause');
+  btn.textContent = paused ? 'Play' : 'Pause';
+  btn.className = paused ? 'active' : '';
+}
+
+function renderWorld() {
+  const cw = worldCanvas.parentElement.clientWidth;
+  const ch = worldCanvas.parentElement.clientHeight - 4;
+  const cell = Math.max(4, Math.min(Math.floor(cw/W), Math.floor(ch/H)));
+  worldCanvas.width = W * cell; worldCanvas.height = H * cell;
+
+  const imgData = wCtx.createImageData(W * cell, H * cell);
+  const d = imgData.data;
+  const isNight = tod < 0.2 || tod > 0.8;
+
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const t = terrain[y][x], f = food[y][x];
+    const base = TERRAIN_BASE[t], foodC = TERRAIN_FOOD[t];
+    const ff = Math.min(1, f / 8) * 0.4;
+    let r = base[0] + (foodC[0] - base[0]) * ff;
+    let g = base[1] + (foodC[1] - base[1]) * ff;
+    let b = base[2] + (foodC[2] - base[2]) * ff;
+    if (isNight) { r *= 0.4; g *= 0.4; b *= 0.5; }
+    for (let py = 0; py < cell; py++) for (let px = 0; px < cell; px++) {
+      const idx = ((y*cell+py)*W*cell + (x*cell+px)) * 4;
+      d[idx] = r; d[idx+1] = g; d[idx+2] = b; d[idx+3] = 255;
+    }
+  }
+  wCtx.putImageData(imgData, 0, 0);
+
+  // Entities
+  for (const e of entities) {
+    const color = SPECIES_COLORS[e.species];
+    const cx = e.x * cell + cell/2, cy = e.y * cell + cell/2;
+    const r = Math.max(2, cell * 0.35);
+    if (e.id === selectedId) { wCtx.beginPath(); wCtx.arc(cx, cy, r+4, 0, Math.PI*2); wCtx.fillStyle = 'rgba(255,255,255,0.25)'; wCtx.fill(); }
+    wCtx.beginPath(); wCtx.arc(cx, cy, r, 0, Math.PI*2); wCtx.fillStyle = color; wCtx.fill();
+    if (cell >= 12) {
+      wCtx.fillStyle = '#000'; wCtx.font = `bold ${Math.floor(cell*0.5)}px monospace`;
+      wCtx.textAlign = 'center'; wCtx.textBaseline = 'middle';
+      wCtx.fillText(e.char, cx, cy);
+    }
+  }
+
+  // Legend
+  const lg = document.getElementById('legend');
+  lg.innerHTML = [
+    ['r','Rabbit',SPECIES_COLORS.RABBIT], ['D','Deer',SPECIES_COLORS.DEER],
+    ['W','Wolf',SPECIES_COLORS.WOLF], ['F','Fox',SPECIES_COLORS.FOX],
+    ['O','Owl',SPECIES_COLORS.OWL],
+    ['.','grass','#555'], ['~','water','#555'], ['#','forest','#555'], ['^','mountain','#555']
+  ].map(([ch,lb,c]) => `<div class="lg"><span class="lg-char" style="color:${c}">${ch}</span><span style="color:var(--dim)">${lb}</span></div>`).join('');
+}
+
+function renderChart() {
+  const cw = popCanvas.parentElement.clientWidth - 24, ch = 100;
+  popCanvas.width = cw; popCanvas.height = ch;
+  pCtx.clearRect(0, 0, cw, ch);
+  let maxP = 1, maxL = 1;
+  for (const arr of Object.values(popHistory)) { maxP = Math.max(maxP, ...arr); maxL = Math.max(maxL, arr.length); }
+  maxP = Math.max(maxP + 2, 5);
+  for (const [sp, arr] of Object.entries(popHistory)) {
+    pCtx.strokeStyle = SPECIES_COLORS[sp]; pCtx.lineWidth = 1.5; pCtx.beginPath();
+    for (let i = 0; i < arr.length; i++) {
+      const x = (i / (maxL-1||1)) * cw, y = ch - (arr[i]/maxP)*(ch-4) - 2;
+      i === 0 ? pCtx.moveTo(x, y) : pCtx.lineTo(x, y);
+    }
+    pCtx.stroke();
+  }
+  pCtx.fillStyle = '#8b949e'; pCtx.font = '10px monospace'; pCtx.textAlign = 'left';
+  for (let v = 0; v <= maxP; v += Math.ceil(maxP/4)) {
+    pCtx.fillText(v, 2, ch - (v/maxP)*(ch-4) - 6);
+  }
+}
+
+function renderMemChart() {
+  const cw = memCanvas.parentElement.clientWidth - 24, ch = 100;
+  memCanvas.width = cw; memCanvas.height = ch;
+  mCtx.clearRect(0, 0, cw, ch);
+  const keys = ['avgStrength', 'food', 'danger', 'social', 'migration'];
+  const colors = ['#e6edf3', '#3fb950', '#f85149', '#58a6ff', '#d29922'];
+  const labels = ['Avg Str', 'Food', 'Danger', 'Social', 'Migr'];
+  let maxV = 0.01, maxL = 1;
+  for (const k of keys) { maxV = Math.max(maxV, ...memHist[k]); maxL = Math.max(maxL, memHist[k].length); }
+  maxV *= 1.2;
+  for (let ki = 0; ki < keys.length; ki++) {
+    const arr = memHist[keys[ki]];
+    mCtx.strokeStyle = colors[ki]; mCtx.lineWidth = 1.5; mCtx.beginPath();
+    for (let i = 0; i < arr.length; i++) {
+      const x = (i / (maxL-1||1)) * cw, y = ch - (arr[i]/maxV)*(ch-4) - 2;
+      i === 0 ? mCtx.moveTo(x, y) : mCtx.lineTo(x, y);
+    }
+    mCtx.stroke();
+  }
+  // Legend
+  mCtx.font = '9px sans-serif';
+  let lx = 4;
+  for (let i = 0; i < labels.length; i++) {
+    mCtx.fillStyle = colors[i];
+    mCtx.fillRect(lx, 2, 10, 2);
+    mCtx.fillText(labels[i], lx + 12, 10);
+    lx += mCtx.measureText(labels[i]).width + 20;
+  }
+}
+
+function renderPopLegend() {
+  const el = document.getElementById('popLegend');
+  const pop = {};
+  for (const e of entities) pop[e.species] = (pop[e.species]||0) + 1;
+  el.innerHTML = Object.entries(pop).sort((a,b) => b[1]-a[1]).map(([sp,cnt]) =>
+    `<div class="item"><span class="dot" style="background:${SPECIES_COLORS[sp]}"></span><span style="color:${SPECIES_COLORS[sp]}">${sp}</span>: <b>${cnt}</b></div>`
+  ).join('');
+}
+
+function renderEvents() {
+  const el = document.getElementById('eventLog');
+  el.innerHTML = eventLog.slice(-15).reverse().map(ev =>
+    `<div class="ev ${ev.type}">${ev.text}</div>`
+  ).join('');
+}
+
+function renderInspector(eid) {
+  const e = entities.find(x => x.id === eid);
+  if (!e) { inspector.innerHTML = '<div class="empty">Entity not found.</div>'; selectedId = null; return; }
+  const color = SPECIES_COLORS[e.species];
+  const ePct = Math.round(e.energy/e.maxE*100), hPct = Math.round(e.health*100), aPct = Math.round(e.age/e.maxAge*100);
+  const memStats = {};
+  for (const m of e.memory.memories) memStats[m.type] = (memStats[m.type]||0)+1;
+
+  let html = `
+    <div class="ent-header">
+      <div class="ent-char" style="color:${color}">${e.char}</div>
+      <div class="ent-info">
+        <div class="name" style="color:${color}">${e.species}#${e.id}</div>
+        <div class="sub">(${e.x},${e.y}) Age ${e.age}/${e.maxAge}</div>
+      </div>
+    </div>
+    <div class="bar-wrap"><div class="bar-label"><span>Energy</span><span>${Math.round(e.energy)}/${e.maxE}</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${ePct}%;background:${ePct>30?'#3fb950':'#f85149'}"></div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>Health</span><span>${hPct}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${hPct}%;background:${hPct>30?'#3fb950':'#f85149'}"></div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>Age</span><span>${aPct}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${aPct}%;background:var(--accent)"></div></div></div>
+    <div class="traits-grid">
+      ${['int','str','spd','soc','con'].map(k => `<div class="trait"><span class="trait-name">${k.toUpperCase()}</span><span>${e.traits[k].toFixed(2)}</span></div>`).join('')}
+      <div class="trait"><span class="trait-name">MEM</span><span>${e.memory.memories.length}/${e.memory.capacity}</span></div>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin:4px 0;">
+      Food: ${e.foodEaten.toFixed(1)} Kills: ${e.kills} Children: ${e.children} Shared: ${e.sharedMem}
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin:6px 0 2px;">Memories (${e.memory.memories.length}):</div>
+    <div class="mem-list">`;
+
+  const iconMap = { SPATIAL_DANGER: ['danger', '\u26a0'], SPATIAL_FOOD: ['food', '\ud83c\udf3f'],
+    MIGRATION: ['migration', '\ud83e\udded'], MATE: ['mate', '\ud83d\udc95'],
+    SOCIAL_ENEMY: ['danger', '\ud83d\udc80'], SOCIAL_FRIEND: ['social', '\ud83d\udc64'] };
+
+  for (const m of [...e.memory.memories].sort((a,b) => b.strength - a.strength).slice(0, 10)) {
+    const [cls, icon] = iconMap[m.type] || ['social', '-'];
+    const desc = m.type === 'SPATIAL_FOOD' ? `food at (${m.content.x},${m.content.y}) q=${m.content.q?.toFixed(1)}`
+      : m.type === 'SPATIAL_DANGER' ? `danger at (${m.content.x},${m.content.y})`
+      : m.type === 'MIGRATION' ? `territory at (${m.content.x},${m.content.y}) d=${m.content.density?.toFixed(1)}`
+      : m.type === 'SOCIAL_FRIEND' ? `friend #${m.content.entity_id}`
+      : m.type === 'SOCIAL_ENEMY' ? `enemy #${m.content.entity_id}`
+      : m.type === 'MATE' ? `mated with #${m.content.entity_id}`
+      : JSON.stringify(m.content);
+    html += `<div class="mem-item"><div class="mem-icon ${cls}">${icon}</div>
+      <div class="mem-body"><div><span class="mem-type">${m.type}</span> <span style="color:var(--dim)">x${m.reinforced}</span></div>
+      <div class="mem-desc">${desc}</div>
+      <div class="mem-bar"><div class="mem-bar-fill" style="width:${Math.round(m.strength*100)}%"></div></div></div></div>`;
+  }
+  html += '</div>';
+  inspector.innerHTML = html;
+}
+
+// ── Canvas Interaction ───────────────────────────────────────────
+worldCanvas.addEventListener('click', ev => {
+  const rect = worldCanvas.getBoundingClientRect();
+  const cell = worldCanvas.width / W;
+  const gx = Math.floor((ev.clientX - rect.left) / cell);
+  const gy = Math.floor((ev.clientY - rect.top) / cell);
+  const found = entities.find(e => e.x === gx && e.y === gy);
+  if (found) { selectedId = found.id; renderInspector(found.id); render(); }
+});
+
+worldCanvas.addEventListener('mousemove', ev => {
+  const rect = worldCanvas.getBoundingClientRect();
+  const cell = worldCanvas.width / W;
+  const gx = Math.floor((ev.clientX - rect.left) / cell);
+  const gy = Math.floor((ev.clientY - rect.top) / cell);
+  const found = entities.find(e => e.x === gx && e.y === gy);
+  if (found) {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (ev.clientX - rect.left + 12) + 'px';
+    tooltip.style.top = (ev.clientY - rect.top - 10) + 'px';
+    tooltip.innerHTML = `<div class="tt-name" style="color:${SPECIES_COLORS[found.species]}">${found.species}#${found.id}</div>
+      <div class="tt-line">Energy: ${Math.round(found.energy)} HP: ${Math.round(found.health*100)}%</div>
+      <div class="tt-line">Memories: ${found.memory.memories.length}/${found.memory.capacity}</div>`;
+  } else tooltip.style.display = 'none';
+});
+worldCanvas.addEventListener('mouseleave', () => tooltip.style.display = 'none');
+
+// ── Controls ─────────────────────────────────────────────────────
+function togglePause() { paused = !paused; render(); }
+function resetSim() { initWorld(); render(); }
+function setSpeed(v) { speed = parseInt(v); if (tickInterval) { clearInterval(tickInterval); tickInterval = setInterval(tickFn, speed); } }
+
+function tickFn() {
+  if (!paused) { simStep(); render(); }
+}
+
+// ── Init ─────────────────────────────────────────────────────────
+initWorld();
+render();
+tickInterval = setInterval(tickFn, speed);
+window.addEventListener('resize', () => { if (entities.length) renderWorld(); });
+</script>
+</body>
+</html>
