@@ -219,6 +219,8 @@ function initWorld() {
       if (terrain[y][x] !== 2) entities.push(new Entity(sp, x, y, rng));
     }
   }
+  initPheromones();
+  initColonies();
 }
 
 // ── Memory System ────────────────────────────────────────────────
@@ -480,6 +482,155 @@ class Entity {
   }
 }
 
+// ── Pheromone System ──────────────────────────────────────────
+const PHER_DECAY = 0.05;
+const PHER_MAX = 10.0;
+let pheromones = []; // pheromones[y][x] = { food: 0, danger: 0, home: 0 }
+function initPheromones() {
+  pheromones = Array.from({length: H}, () => Array.from({length: W}, () => ({food:0,danger:0,home:0})));
+}
+function pherDeposit(x, y, type, amt) {
+  if (x>=0 && x<W && y>=0 && y<H) { pheromones[y][x][type] = Math.min(PHER_MAX, pheromones[y][x][type] + amt); }
+}
+function pherGet(x, y, type) { return (x>=0 && x<W && y>=0 && y<H) ? pheromones[y][x][type] : 0; }
+function pherGradient(x, y, type) {
+  let bestDx=0, bestDy=0, bestV = pherGet(x,y,type);
+  for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++) {
+    if (!dx && !dy) continue;
+    const v = pherGet(x+dx,y+dy,type);
+    if (v > bestV) { bestV=v; bestDx=dx; bestDy=dy; }
+  }
+  return [bestDx, bestDy];
+}
+function pherTick() {
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++) {
+    const c = pheromones[y][x];
+    for (const k of ['food','danger','home']) { c[k] *= (1-PHER_DECAY); if (c[k]<0.01) c[k]=0; }
+  }
+}
+
+// ── Colony System ────────────────────────────────────────────────
+let colonies = [];
+let antIdCounter = 0;
+let colonyIdCounter = 0;
+
+class Ant {
+  constructor(x, y, colony) {
+    this.id = ++antIdCounter;
+    this.x = x; this.y = y; this.colony = colony;
+    this.alive = true; this.age = 0; this.maxAge = 200 + rng.irange(0,100);
+    this.energy = 60; this.maxE = 60;
+    this.carryingFood = 0; this.maxCarry = 5;
+    this._returnHome = false; this._stepsNoFood = 0; this._maxExplore = 30 + rng.irange(0,20);
+    this._wanderCd = 0;
+    this.memory = new MemoryBank(0.8);
+    this.memory.capacity = 8;
+  }
+  passable(x,y) { return x>=0 && x<W && y>=0 && y<H && terrain[y][x]!==2; }
+  tryMove(dx,dy) {
+    const nx=this.x+dx, ny=this.y+dy;
+    if (!this.passable(nx,ny)) return false;
+    const cost = TERRAIN_MOVE_COST[terrain[ny][nx]] * 0.8;
+    if (this.energy < cost) return false;
+    this.x=nx; this.y=ny; this.energy-=cost; return true;
+  }
+  sign(v) { return v>0?1:v<0?-1:0; }
+  workTick() {
+    if (!this.alive) return;
+    this.age++; this.energy -= 0.3;
+    if (this.energy<=0 || this.age>this.maxAge) { this.alive=false; return; }
+    const atNest = Math.abs(this.x-this.colony.nestX)<=1 && Math.abs(this.y-this.colony.nestY)<=1;
+    const cellFood = food[this.y][this.x];
+    // Carrying food -> return home
+    if (this.carryingFood > 0) {
+      this._returnHome = true;
+      pherDeposit(this.x, this.y, 'food', 2.0 * (this.carryingFood/this.maxCarry));
+      if (atNest) { this.colony.foodReserves = Math.min(200, this.colony.foodReserves + this.carryingFood); this.colony.totalGathered += this.carryingFood; this.carryingFood=0; this._returnHome=false; this._stepsNoFood=0; this._maxExplore=30+rng.irange(0,20); return; }
+      const [gx,gy] = pherGradient(this.x, this.y, 'home');
+      if (gx||gy) this.tryMove(gx,gy); else this.tryMove(this.sign(this.colony.nestX-this.x), this.sign(this.colony.nestY-this.y));
+      return;
+    }
+    // At food -> pick up
+    if (cellFood > 1.0 && !this._returnHome) {
+      const pick = Math.min(cellFood, this.maxCarry);
+      if (pick > 0.5) { food[this.y][this.x] -= pick; this.carryingFood=pick; this.energy=Math.min(this.maxE, this.energy+pick*3); pherDeposit(this.x,this.y,'food',4.0); return; }
+    }
+    // Danger -> avoid
+    const dangerHere = pherGet(this.x,this.y,'danger');
+    if (dangerHere > 0.5) {
+      pherDeposit(this.x,this.y,'danger',1.5);
+      // Flee from danger center
+      let bx=-1,by=-1,bv=0;
+      for (let dy=-3;dy<=3;dy++) for (let dx=-3;dx<=3;dx++) { const v=pherGet(this.x+dx,this.y+dy,'danger'); if(v>bv){bv=v;bx=this.x+dx;by=this.y+dy;} }
+      if (bx>=0) { this.tryMove(this.sign(this.x-bx), this.sign(this.y-by)); return; }
+    }
+    // Food trail -> follow
+    const [fdx,fdy] = pherGradient(this.x,this.y,'food');
+    const fs = pherGet(this.x,this.y,'food');
+    if (fs>0.1 && (fdx||fdy)) { this.tryMove(fdx,fdy); this._stepsNoFood++; if(this._stepsNoFood>this._maxExplore) { this._wanderCd=0; this._explore(); } return; }
+    // Explore
+    this._explore();
+    pherDeposit(this.x,this.y,'home',0.3);
+    this._stepsNoFood++;
+  }
+  _explore() {
+    if (this._wanderCd>0) { this._wanderCd--; this.tryMove(rng.irange(-1,1),rng.irange(-1,1)); return; }
+    this._wanderCd=rng.irange(2,5);
+    if (rng.next()<0.3) {
+      let bx=this.x,by=this.y,bs=-1;
+      for(let i=0;i<5;i++) { const rx=this.x+rng.irange(-4,4),ry=this.y+rng.irange(-4,4); if(rx>=0&&rx<W&&ry>=0&&ry<H&&terrain[ry][rx]!==2){const s=food[ry][rx]*0.5;if(s>bs){bs=s;bx=rx;by=ry;}} }
+      this.tryMove(this.sign(bx-this.x),this.sign(by-this.y));
+    } else this.tryMove(rng.irange(-1,1),rng.irange(-1,1));
+  }
+}
+
+class Colony {
+  constructor(nestX, nestY) {
+    this.id = ++colonyIdCounter;
+    this.nestX = nestX; this.nestY = nestY;
+    this.alive = true; this.age = 0;
+    this.foodReserves = 50; this.totalGathered = 0;
+    this.queenAlive = true; this.queenAge = 0;
+    this.queenMemories = 0;
+    this.workers = [];
+    for (let i=0; i<8; i++) this._spawnWorker();
+  }
+  _spawnWorker() {
+    const x = this.nestX + rng.irange(-2,2), y = this.nestY + rng.irange(-2,2);
+    if (x>=0 && x<W && y>=0 && y<H && terrain[y][x]!==2) this.workers.push(new Ant(x,y,this));
+  }
+  tick() {
+    this.age++;
+    if (!this.alive) return;
+    // Queen stays alive as long as colony has food
+    if (this.queenAlive) {
+      this.queenAge++;
+      if (this.foodReserves>5) { this.foodReserves-=0.5; }
+      else { this.queenAlive = false; }
+    }
+    // Worker ticks
+    for (const w of this.workers) w.workTick();
+    this.workers = this.workers.filter(w => w.alive);
+    // Auto-spawn
+    if (this.queenAlive && this.foodReserves>30 && this.workers.length<25 && this.age%10===0 && rng.next()<0.4) {
+      this.foodReserves -= 8;
+      this._spawnWorker();
+    }
+    if (!this.queenAlive && this.workers.length===0) this.alive = false;
+  }
+}
+
+function initColonies() {
+  colonies = []; colonyIdCounter = 0; antIdCounter = 0;
+  const numC = W*H > 400 ? 2 : 1;
+  for (let i=0; i<numC; i++) {
+    for (let att=0; att<100; att++) {
+      const cx=rng.irange(2,W-3), cy=rng.irange(2,H-3);
+      if (terrain[cy][cx]===3) { colonies.push(new Colony(cx,cy)); eventLog.push({type:'share',text:`Colony#${colonyIdCounter} at (${cx},${cy})`}); break; }
+    }
+  }
+}
+
 // ── Simulation Step ──────────────────────────────────────────────
 function simStep() {
   tick++;
@@ -503,10 +654,18 @@ function simStep() {
   }
   entities = entities.filter(e => !toRemove.has(e.id));
   for (const e of entities) e.memory.tick_();
+  // Colony ticks
+  for (const c of colonies) { if (c.alive) c.tick(); }
+  colonies = colonies.filter(c => c.alive);
+  pherTick();
   // Record pop
   const pop = {};
   for (const e of entities) pop[e.species] = (pop[e.species]||0) + 1;
-  for (const sp of Object.keys(popHistory)) popHistory[sp].push(pop[sp] || 0);
+  const totalAnts = colonies.reduce((s,c) => s + c.workers.length, 0);
+  const totalQueens = colonies.reduce((s,c) => s + (c.queenAlive?1:0), 0);
+  if (totalAnts) pop['ANT'] = totalAnts;
+  if (totalQueens) pop['QUEEN'] = totalQueens;
+  for (const sp of Object.keys(popHistory)) { if (!(sp in popHistory)) popHistory[sp]=[]; popHistory[sp].push(pop[sp] || 0); }
   // Record memory stats
   let totalStr = 0, memCnt = 0;
   const typeCnt = { food: 0, danger: 0, social: 0, migration: 0 };
@@ -549,7 +708,8 @@ function renderHeader() {
   document.getElementById('hTick').textContent = tick;
   document.getElementById('hDay').textContent = day;
   document.getElementById('hSeason').textContent = SEASONS[season];
-  document.getElementById('hPop').textContent = entities.length;
+  const totalAntsH = colonies.reduce((s,c) => s + c.workers.length, 0);
+  document.getElementById('hPop').textContent = entities.length + (totalAntsH ? `+${totalAntsH}a` : '');
   document.getElementById('hTime').textContent = (tod < 0.2 || tod > 0.8) ? 'Night' : 'Day';
   const btn = document.getElementById('btnPause');
   btn.textContent = paused ? 'Play' : 'Pause';
@@ -581,6 +741,50 @@ function renderWorld() {
   }
   wCtx.putImageData(imgData, 0, 0);
 
+  // Pheromone overlay (subtle colored tint on cells with pheromones)
+  if (cell >= 3) {
+    for (let y=0;y<H;y++) for (let x=0;x<W;x++) {
+      const p = pheromones[y][x];
+      if (p.danger > 0.3) {
+        wCtx.fillStyle = `rgba(248,81,73,${Math.min(0.4, p.danger*0.08)})`;
+        wCtx.fillRect(x*cell, y*cell, cell, cell);
+      } else if (p.food > 0.3) {
+        wCtx.fillStyle = `rgba(63,185,80,${Math.min(0.35, p.food*0.07)})`;
+        wCtx.fillRect(x*cell, y*cell, cell, cell);
+      } else if (p.home > 0.3) {
+        wCtx.fillStyle = `rgba(88,166,255,${Math.min(0.2, p.home*0.04)})`;
+        wCtx.fillRect(x*cell, y*cell, cell, cell);
+      }
+    }
+  }
+
+  // Colony nests
+  for (const c of colonies) {
+    const nx = c.nestX * cell + cell/2, ny = c.nestY * cell + cell/2;
+    const nr = Math.max(4, cell * 0.6);
+    wCtx.beginPath(); wCtx.arc(nx, ny, nr+2, 0, Math.PI*2);
+    wCtx.fillStyle = c.queenAlive ? 'rgba(57,211,83,0.35)' : 'rgba(248,81,73,0.25)';
+    wCtx.fill();
+    wCtx.beginPath(); wCtx.arc(nx, ny, nr, 0, Math.PI*2);
+    wCtx.fillStyle = c.queenAlive ? '#1a5c2a' : '#5c1a1a';
+    wCtx.fill();
+    wCtx.fillStyle = '#fff'; wCtx.font = `bold ${Math.floor(cell*0.45)}px monospace`;
+    wCtx.textAlign = 'center'; wCtx.textBaseline = 'middle';
+    wCtx.fillText('N', nx, ny);
+  }
+
+  // Ants (small dots)
+  for (const c of colonies) {
+    for (const a of c.workers) {
+      if (!a.alive) continue;
+      const ax = a.x * cell + cell/2, ay = a.y * cell + cell/2;
+      const ar = Math.max(1.5, cell * 0.2);
+      wCtx.beginPath(); wCtx.arc(ax, ay, ar, 0, Math.PI*2);
+      wCtx.fillStyle = a.carryingFood > 0 ? '#d29922' : '#39d353';
+      wCtx.fill();
+    }
+  }
+
   // Entities
   for (const e of entities) {
     const color = SPECIES_COLORS[e.species];
@@ -601,6 +805,8 @@ function renderWorld() {
     ['r','Rabbit',SPECIES_COLORS.RABBIT], ['D','Deer',SPECIES_COLORS.DEER],
     ['W','Wolf',SPECIES_COLORS.WOLF], ['F','Fox',SPECIES_COLORS.FOX],
     ['O','Owl',SPECIES_COLORS.OWL],
+    ['N','Nest','#1a5c2a'], ['a','Ant','#39d353'],
+    ['*','Food trail','#3fb950'], ['!','Danger','#f85149'],
     ['.','grass','#555'], ['~','water','#555'], ['#','forest','#555'], ['^','mountain','#555']
   ].map(([ch,lb,c]) => `<div class="lg"><span class="lg-char" style="color:${c}">${ch}</span><span style="color:var(--dim)">${lb}</span></div>`).join('');
 }
@@ -656,13 +862,26 @@ function renderMemChart() {
   }
 }
 
+const POP_COLORS = { ...SPECIES_COLORS, ANT: '#39d353', QUEEN: '#d29922' };
 function renderPopLegend() {
   const el = document.getElementById('popLegend');
   const pop = {};
   for (const e of entities) pop[e.species] = (pop[e.species]||0) + 1;
-  el.innerHTML = Object.entries(pop).sort((a,b) => b[1]-a[1]).map(([sp,cnt]) =>
-    `<div class="item"><span class="dot" style="background:${SPECIES_COLORS[sp]}"></span><span style="color:${SPECIES_COLORS[sp]}">${sp}</span>: <b>${cnt}</b></div>`
+  const totalAnts = colonies.reduce((s,c) => s + c.workers.length, 0);
+  const totalQueens = colonies.reduce((s,c) => s + (c.queenAlive?1:0), 0);
+  const totalGathered = colonies.reduce((s,c) => s + c.totalGathered, 0);
+  if (totalAnts) pop['ANT'] = totalAnts;
+  if (totalQueens) pop['QUEEN'] = totalQueens;
+  let html = Object.entries(pop).sort((a,b) => b[1]-a[1]).map(([sp,cnt]) =>
+    `<div class="item"><span class="dot" style="background:${POP_COLORS[sp]||'#888'}"></span><span style="color:${POP_COLORS[sp]||'#888'}">${sp}</span>: <b>${cnt}</b></div>`
   ).join('');
+  // Colony info
+  for (const c of colonies) {
+    html += `<div style="font-size:11px;color:var(--dim);margin-top:4px;border-top:1px solid var(--border);padding-top:4px;width:100%;">
+      Colony#${c.id}: nest(${c.nestX},${c.nestY}) ${c.workers.length} workers food=${Math.round(c.foodReserves)} gathered=${Math.round(c.totalGathered)} Q=${c.queenAlive?'alive':'DEAD'}
+    </div>`;
+  }
+  el.innerHTML = html;
 }
 
 function renderEvents() {
@@ -726,6 +945,33 @@ function renderInspector(eid) {
   inspector.innerHTML = html;
 }
 
+function renderColonyInspector(col) {
+  const queenColor = col.queenAlive ? '#3fb950' : '#f85149';
+  const queenIcon = col.queenAlive ? '\u265B' : '\u2716';
+  let html = `
+    <div class="ent-header">
+      <div class="ent-char" style="color:#39d353">N</div>
+      <div class="ent-info">
+        <div class="name" style="color:#39d353">Colony#${col.id}</div>
+        <div class="sub">Nest at (${col.nestX},${col.nestY}) Age ${col.age}</div>
+      </div>
+    </div>
+    <div class="bar-wrap"><div class="bar-label"><span>Food Reserves</span><span>${Math.round(col.foodReserves)}/200</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${col.foodReserves/2}%;background:#3fb950"></div></div></div>
+    <div style="font-size:12px;margin:6px 0;">
+      <div style="color:${queenColor}">${queenIcon} Queen: ${col.queenAlive ? 'Alive (age ' + col.queenAge + ')' : 'DEAD'}</div>
+      <div style="color:var(--text);margin-top:2px;">Workers: <b>${col.workers.length}</b></div>
+      <div style="color:var(--dim);">Food Gathered: ${Math.round(col.totalGathered)}</div>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin-top:6px;border-top:1px solid var(--border);padding-top:6px;">
+      Ants follow <span style="color:#3fb950">food trails</span> (green), avoid <span style="color:#f85149">danger</span> (red),
+      and lay <span style="color:#58a6ff">home trails</span> (blue) to find the nest.
+      The queen stores permanent colony memories -- if she dies, they're lost forever.
+    </div>
+  `;
+  inspector.innerHTML = html;
+}
+
 // ── Canvas Interaction ───────────────────────────────────────────
 worldCanvas.addEventListener('click', ev => {
   const rect = worldCanvas.getBoundingClientRect();
@@ -733,7 +979,10 @@ worldCanvas.addEventListener('click', ev => {
   const gx = Math.floor((ev.clientX - rect.left) / cell);
   const gy = Math.floor((ev.clientY - rect.top) / cell);
   const found = entities.find(e => e.x === gx && e.y === gy);
-  if (found) { selectedId = found.id; renderInspector(found.id); render(); }
+  if (found) { selectedId = found.id; renderInspector(found.id); render(); return; }
+  // Check colony nests
+  const col = colonies.find(c => c.nestX === gx && c.nestY === gy);
+  if (col) { renderColonyInspector(col); render(); }
 });
 
 worldCanvas.addEventListener('mousemove', ev => {
@@ -749,7 +998,18 @@ worldCanvas.addEventListener('mousemove', ev => {
     tooltip.innerHTML = `<div class="tt-name" style="color:${SPECIES_COLORS[found.species]}">${found.species}#${found.id}</div>
       <div class="tt-line">Energy: ${Math.round(found.energy)} HP: ${Math.round(found.health*100)}%</div>
       <div class="tt-line">Memories: ${found.memory.memories.length}/${found.memory.capacity}</div>`;
-  } else tooltip.style.display = 'none';
+  } else {
+    // Check colony nest
+    const col = colonies.find(c => c.nestX === gx && c.nestY === gy);
+    if (col) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (ev.clientX - rect.left + 12) + 'px';
+      tooltip.style.top = (ev.clientY - rect.top - 10) + 'px';
+      tooltip.innerHTML = `<div class="tt-name" style="color:#39d353">Colony#${col.id}</div>
+        <div class="tt-line">Workers: ${col.workers.length} Food: ${Math.round(col.foodReserves)}</div>
+        <div class="tt-line">Queen: ${col.queenAlive?'Alive':'Dead'}</div>`;
+    } else tooltip.style.display = 'none';
+  }
 });
 worldCanvas.addEventListener('mouseleave', () => tooltip.style.display = 'none');
 

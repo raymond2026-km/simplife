@@ -60,6 +60,94 @@ SEASONS = ["Spring", "Summer", "Autumn", "Winter"]
 SEASON_FOOD_MULT = [1.2, 1.0, 0.7, 0.3]  # multiplier for food growth
 
 
+class PheromoneType(Enum):
+    FOOD_TRAIL = auto()   # ants lay this when carrying food home
+    DANGER_TRAIL = auto()  # ants lay this when attacked
+    HOME_TRAIL = auto()    # ants lay this leaving the nest
+
+
+# Pheromone colors for rendering
+PHEROMONE_COLORS = {
+    PheromoneType.FOOD_TRAIL: (0.0, 0.8, 0.3),    # green
+    PheromoneType.DANGER_TRAIL: (0.9, 0.2, 0.1),   # red
+    PheromoneType.HOME_TRAIL: (0.3, 0.5, 0.9),     # blue
+}
+
+
+class PheromoneLayer:
+    """2D grid of pheromone intensities.
+
+    Each cell has multiple pheromone types. Pheromones are deposited by
+    ants and decay over time. Ants follow pheromone gradients to find
+    food and avoid danger.
+    """
+
+    def __init__(self, width: int, height: int) -> None:
+        self.width = width
+        self.height = height
+        self.decay_rate = 0.05  # per tick, each pheromone fades
+        self.max_strength = 10.0
+        # grid[y][x] = {PheromoneType: float}
+        self.grid: list[list[dict[PheromoneType, float]]] = [
+            [{} for _ in range(width)] for _ in range(height)
+        ]
+
+    def deposit(self, x: int, y: int, ptype: PheromoneType, amount: float) -> None:
+        """Deposit pheromone at a cell."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            cell = self.grid[y][x]
+            cell[ptype] = min(self.max_strength, cell.get(ptype, 0.0) + amount)
+
+    def get(self, x: int, y: int, ptype: PheromoneType) -> float:
+        """Get pheromone intensity at a cell."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self.grid[y][x].get(ptype, 0.0)
+        return 0.0
+
+    def gradient(self, x: int, y: int, ptype: PheromoneType) -> tuple[int, int]:
+        """Return direction (dx, dy) of strongest pheromone gradient.
+
+        Ants follow this to trace trails back to food or home.
+        """
+        best_dx, best_dy = 0, 0
+        best_val = self.get(x, y, ptype)
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                val = self.get(x + dx, y + dy, ptype)
+                # Prefer moving outward (not backtracking)
+                if val > best_val:
+                    best_val = val
+                    best_dx, best_dy = dx, dy
+        return best_dx, best_dy
+
+    def strongest_nearby(self, x: int, y: int, ptype: PheromoneType,
+                         radius: int = 3) -> tuple[int, int, float]:
+        """Find the strongest pheromone of given type within radius.
+        Returns (x, y, strength) or (-1, -1, 0) if none found."""
+        best_x, best_y, best_val = -1, -1, 0.0
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                val = self.get(x + dx, y + dy, ptype)
+                if val > best_val:
+                    best_val = val
+                    best_x, best_y = x + dx, y + dy
+        return best_x, best_y, best_val
+
+    def tick(self) -> None:
+        """Decay all pheromones."""
+        for row in self.grid:
+            for cell in row:
+                dead_keys = []
+                for ptype in cell:
+                    cell[ptype] *= (1.0 - self.decay_rate)
+                    if cell[ptype] < 0.01:
+                        dead_keys.append(ptype)
+                for k in dead_keys:
+                    del cell[k]
+
+
 @dataclass
 class Cell:
     terrain: Terrain
@@ -94,6 +182,9 @@ class World:
         # Generate terrain using a simple cellular automaton
         self.grid: list[list[Cell]] = []
         self._generate_terrain()
+
+        # Pheromone layer for ant colonies
+        self.pheromones = PheromoneLayer(width, height)
 
         # Day/night
         self.time_of_day = 0.0  # 0..1 (0 = midnight, 0.25 = dawn, 0.5 = noon, 0.75 = dusk)
@@ -173,6 +264,9 @@ class World:
                 if not self.is_night:
                     growth *= 1.5
                 cell.food = min(cell.food_max, cell.food + growth)
+
+        # Pheromone decay
+        self.pheromones.tick()
 
     def _generate_terrain(self) -> None:
         """Generate terrain using Perlin-like noise (simplified)."""

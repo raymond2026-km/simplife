@@ -19,6 +19,8 @@ from typing import Any
 from simplife.simulation import Simulation
 from simplife.entity import Entity, Species, SPECIES_CONFIG
 from simplife.memory import MemType
+from simplife.colony import Colony, Ant
+from simplife.world import PheromoneType
 
 
 def entity_to_dict(e: Entity) -> dict[str, Any]:
@@ -112,6 +114,42 @@ def world_to_dict(sim: Simulation) -> dict[str, Any]:
             clean = clean.replace(code, "")
         recent_events.append(clean)
 
+    # Ant colonies
+    colonies_data = []
+    for colony in sim.colonies:
+        workers_data = []
+        for w in colony.workers:
+            if w.alive:
+                workers_data.append({
+                    "id": w.id,
+                    "x": w.x, "y": w.y,
+                    "energy": round(w.energy, 1),
+                    "carryingFood": round(w.carrying_food, 1),
+                    "age": w.age,
+                })
+        colonies_data.append({
+            "id": colony.id,
+            "nestX": colony.nest_x,
+            "nestY": colony.nest_y,
+            "alive": colony.alive,
+            "foodReserves": round(colony.food_reserves, 1),
+            "queenAlive": colony.queen.alive,
+            "queenAge": colony.queen.age,
+            "queenMemories": len(colony.queen.memory.memories),
+            "totalWorkers": colony.total_workers_alive,
+            "totalFoodGathered": round(colony.total_food_gathered, 1),
+            "workers": workers_data,
+        })
+
+    # Population with ants
+    pop = sim._population_counts()
+    total_ants = sum(c.total_workers_alive for c in sim.colonies)
+    if total_ants > 0:
+        pop["ANT"] = total_ants
+    total_queens = sum(1 for c in sim.colonies if c.queen.alive)
+    if total_queens > 0:
+        pop["QUEEN"] = total_queens
+
     return {
         "tick": sim.tick_count,
         "day": sim.world.day,
@@ -122,7 +160,8 @@ def world_to_dict(sim: Simulation) -> dict[str, Any]:
         "terrain": terrain,
         "food": food,
         "entities": entities,
-        "population": sim._population_counts(),
+        "colonies": colonies_data,
+        "population": pop,
         "popHistory": pop_hist,
         "events": recent_events,
         "paused": sim.paused,

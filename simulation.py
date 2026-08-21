@@ -18,9 +18,10 @@ import codecs
 from collections import defaultdict
 from typing import Optional, TYPE_CHECKING
 
-from simplife.world import World, Terrain
+from simplife.world import World, Terrain, PheromoneType
 from simplife.entity import Entity, Species, SPECIES_CONFIG
 from simplife.memory import MemType
+from simplife.colony import Colony, Queen, Ant
 
 if TYPE_CHECKING:
     pass
@@ -82,6 +83,9 @@ class Simulation:
         self.event_log: list[str] = []
         self.max_log = 50
 
+        # Ant colonies
+        self.colonies: list[Colony] = []
+
         # Memory stats over time
         self.memory_stats_history: dict[str, list[float]] = {
             "avg_strength": [], "avg_count": [],
@@ -111,6 +115,24 @@ class Simulation:
                     attempts += 1
                 if self.world.is_passable(x, y):
                     self.entities.append(Entity(species, x, y, self.world))
+
+        # Spawn 1-2 ant colonies at forest locations
+        num_colonies = 2 if self.world.width * self.world.height > 400 else 1
+        for _ in range(num_colonies):
+            attempts = 0
+            while attempts < 100:
+                cx = random.randint(2, self.world.width - 3)
+                cy = random.randint(2, self.world.height - 3)
+                if (self.world.is_passable(cx, cy)
+                        and self.world.cell(cx, cy).terrain == Terrain.FOREST):
+                    colony = Colony(cx, cy, self.world, num_workers=8)
+                    self.colonies.append(colony)
+                    self._log(
+                        f"  Colony#{colony.id} established at ({cx},{cy}) "
+                        f"with {colony.total_workers_alive} workers"
+                    )
+                    break
+                attempts += 1
 
     # ── main loop ─────────────────────────────────────────────────────
 
@@ -188,11 +210,32 @@ class Simulation:
                 actions_this_tick.append(action)
                 self._resolve_action(action, new_entities, dead_this_tick)
 
+        # Colony ticks
+        for colony in self.colonies:
+            if colony.alive:
+                colony_actions = colony.tick()
+                for action in colony_actions:
+                    if action.get("type") == "colony_event":
+                        evt = action.get("event", "")
+                        if evt == "queen_died":
+                            self._log(
+                                f"  {COLORS['red']}Colony#{colony.id} queen died! Colony collapsing!{COLORS['reset']}"
+                            )
+
         # Process deaths
         for entity in dead_this_tick:
             entity.alive = False
             cause = "died"
             self._log(f"{ENT_COLORS.get(entity.species, '')}{entity.name}#{entity.id}{COLORS['reset']} {cause}")
+
+        # Process dead colonies
+        dead_colonies = [c for c in self.colonies if not c.alive]
+        for colony in dead_colonies:
+            self._log(
+                f"  {COLORS['red']}Colony#{colony.id} has collapsed!" +
+                f" ({colony.total_workers_ever} workers served it){COLORS['reset']}"
+            )
+        self.colonies = [c for c in self.colonies if c.alive]
 
         # Add new entities (births) — respect carrying capacity
         max_pop = self.world.width * self.world.height // 4  # ~25% density cap
@@ -214,8 +257,14 @@ class Simulation:
         # Remove dead entities
         self.entities = [e for e in self.entities if e.alive]
 
-        # Record population
+        # Record population (including colony workers)
         pop = self._population_counts()
+        total_ants = sum(c.total_workers_alive for c in self.colonies)
+        if total_ants > 0:
+            pop["ANT"] = total_ants
+        total_queens = sum(1 for c in self.colonies if c.queen.alive)
+        if total_queens > 0:
+            pop["QUEEN"] = total_queens
         for species_name, count in pop.items():
             self.pop_history[species_name].append(count)
 
@@ -337,10 +386,24 @@ class Simulation:
         )
         lines.append("")
 
-        # World map with entities
+        # World map with entities, ants, and pheromone trails
         entity_map: dict[tuple[int, int], Entity] = {}
         for e in self.entities:
             entity_map[(e.x, e.y)] = e
+
+        # Build ant position map
+        ant_map: dict[tuple[int, int], Ant] = {}
+        for colony in self.colonies:
+            for w in colony.workers:
+                if w.alive:
+                    ant_map[(w.x, w.y)] = w
+
+        # Colony nest positions
+        nest_positions = set()
+        for colony in self.colonies:
+            nest_positions.add((colony.nest_x, colony.nest_y))
+
+        pher = self.world.pheromones
 
         for y in range(self.world.height):
             line: list[str] = []
@@ -353,6 +416,16 @@ class Simulation:
                         line.append(f"{COLORS['bold']}{COLORS['bg_yellow']}{color}{ent.char}{COLORS['reset']}")
                     else:
                         line.append(f"{color}{ent.char}{COLORS['reset']}")
+                elif key in nest_positions:
+                    # Colony nest marker
+                    line.append(f"{COLORS['bold']}{COLORS['bg_green']}{COLORS['white']}N{COLORS['reset']}")
+                elif key in ant_map:
+                    # Ant worker
+                    ant = ant_map[key]
+                    if ant.carrying_food > 0:
+                        line.append(f"{COLORS['yellow']}a{COLORS['reset']}")
+                    else:
+                        line.append(f"{COLORS['cyan']}a{COLORS['reset']}")
                 else:
                     cell = self.world.cell(x, y)
                     ch = {
@@ -361,8 +434,16 @@ class Simulation:
                         Terrain.FOREST: "#",
                         Terrain.MOUNTAIN: "^",
                     }[cell.terrain]
-                    # Dim at night
-                    if self.world.is_night:
+
+                    # Show pheromone overlays (dimmed, only if present)
+                    food_p = pher.get(x, y, PheromoneType.FOOD_TRAIL)
+                    danger_p = pher.get(x, y, PheromoneType.DANGER_TRAIL)
+
+                    if danger_p > 0.5:
+                        line.append(f"{COLORS['red']}!{COLORS['reset']}")
+                    elif food_p > 0.5:
+                        line.append(f"{COLORS['green']}*{COLORS['reset']}")
+                    elif self.world.is_night:
                         line.append(f"{COLORS['dim']}{ch}{COLORS['reset']}")
                     else:
                         line.append(ch)
@@ -372,13 +453,35 @@ class Simulation:
 
         # Population stats
         pop = self._population_counts()
+        total_ants = sum(c.total_workers_alive for c in self.colonies)
+        if total_ants > 0:
+            pop["ANT"] = total_ants
+        total_queens = sum(1 for c in self.colonies if c.queen.alive)
+        if total_queens > 0:
+            pop["QUEEN"] = total_queens
         pop_parts: list[str] = []
         for name, count in sorted(pop.items(), key=lambda x: -x[1]):
             sp_enum = getattr(Species, name, None)
             color = ENT_COLORS.get(sp_enum, '') if sp_enum else ''
+            if name == "ANT":
+                color = COLORS['cyan']
+            elif name == "QUEEN":
+                color = COLORS['yellow']
             pop_parts.append(f"{color}{name}: {count}{COLORS['reset']}")
         pop_str = " | ".join(pop_parts)
         lines.append(f"{COLORS['bold']}Population:{COLORS['reset']} {pop_str}")
+
+        # Colony info
+        for colony in self.colonies:
+            queen_icon = "*" if colony.queen.alive else "X"
+            lines.append(
+                f"  {COLORS['cyan']}Colony#{colony.id}{COLORS['reset']} "
+                f"nest=({colony.nest_x},{colony.nest_y}) "
+                f"workers={colony.total_workers_alive} "
+                f"food={colony.food_reserves:.0f} "
+                f"memories={colony.queen.memory.stats()} "
+                f"Q={queen_icon}"
+            )
 
         # Event log (last 8)
         if self.event_log:
@@ -397,7 +500,13 @@ class Simulation:
             f"{ENT_COLORS.get(sp, '')}{cfg['char']}={cfg['name']}{COLORS['reset']}"
             for sp, cfg in SPECIES_CONFIG.items()
         )
-        lines.append(f"{COLORS['dim']}{legend} | .grass ~water #forest ^mountain{COLORS['reset']}")
+        lines.append(
+            f"{COLORS['dim']}{legend} | "
+            f"{COLORS['cyan']}a=ant N=nest{COLORS['reset']} | "
+            f"{COLORS['green']}*=food trail{COLORS['reset']} "
+            f"{COLORS['red']}!=danger{COLORS['reset']} "
+            f"{COLORS['dim']}.grass ~water #forest ^mountain{COLORS['reset']}"
+        )
 
         sys.stdout.write("\n".join(lines))
         sys.stdout.flush()
@@ -587,6 +696,13 @@ class Simulation:
             name = e.species.name
             counts[name] = counts.get(name, 0) + 1
         return counts
+
+    def get_all_ants(self) -> list[Ant]:
+        """Get all living ants across all colonies."""
+        ants: list[Ant] = []
+        for colony in self.colonies:
+            ants.extend(w for w in colony.workers if w.alive)
+        return ants
 
     def _log(self, msg: str) -> None:
         self.event_log.append(msg)
