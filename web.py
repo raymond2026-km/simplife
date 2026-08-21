@@ -231,6 +231,14 @@ class SimHandler(BaseHTTPRequestHandler):
             self._serve_state()
         elif self.path.startswith("/entity/"):
             self._serve_entity()
+        elif self.path == "/replay":
+            self._serve_replay()
+        elif self.path.startswith("/replay/frame/"):
+            self._serve_replay_frame()
+        elif self.path == "/observer":
+            self._serve_observer()
+        elif self.path == "/replay/controls":
+            self._serve_replay_controls()
         else:
             self.send_error(404)
 
@@ -313,6 +321,108 @@ class SimHandler(BaseHTTPRequestHandler):
         finally:
             self.state.unsubscribe(q)
 
+    def _serve_replay(self) -> None:
+        """Serve the full replay data."""
+        try:
+            with self.state.lock:
+                logger = self.state.sim.replay_logger
+                if logger is None:
+                    body = json.dumps({"error": "Replay not enabled", "frames": []}).encode("utf-8")
+                else:
+                    body = json.dumps(logger.to_dict(), ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            err = json.dumps({"error": str(exc)}).encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+
+    def _serve_replay_frame(self) -> None:
+        """Serve a single replay frame by index."""
+        try:
+            idx = int(self.path.split("/")[-1])
+        except (ValueError, IndexError):
+            self.send_error(400)
+            return
+        try:
+            with self.state.lock:
+                logger = self.state.sim.replay_logger
+                if logger is None:
+                    self.send_error(404)
+                    return
+                frame = logger.get_frame(idx)
+                if frame is None:
+                    self.send_error(404)
+                    return
+                body = json.dumps(logger._frame_to_dict(frame), ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            err = json.dumps({"error": str(exc)}).encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+
+    def _serve_replay_controls(self) -> None:
+        """Serve replay control state (tick range, current index)."""
+        try:
+            with self.state.lock:
+                logger = self.state.sim.replay_logger
+                if logger is None:
+                    body = json.dumps({"enabled": False}).encode("utf-8")
+                else:
+                    body = json.dumps({
+                        "enabled": True,
+                        "totalFrames": logger.total_frames,
+                        "tickRange": list(logger.tick_range),
+                        "captureInterval": logger.capture_interval,
+                    }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            err = json.dumps({"error": str(exc)}).encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+
+    def _serve_observer(self) -> None:
+        """Serve observer data for the tracked entity."""
+        try:
+            with self.state.lock:
+                obs = self.state.sim.observer
+                if obs is None:
+                    body = json.dumps({"error": "Observer not enabled", "summary": {}, "timeline": []}).encode("utf-8")
+                else:
+                    body = json.dumps(obs.to_dict(), ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            err = json.dumps({"error": str(exc)}).encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress default HTTP logging
         pass
@@ -340,10 +450,23 @@ def run_web(
     port: int = 8765,
     speed: float = 0.08,
     max_ticks: int = 0,
+    enable_replay: bool = False,
+    observe_entity_id: int | None = None,
 ) -> None:
     """Start the web server and simulation."""
     sim = Simulation(width=width, height=height, seed=seed, speed=speed)
     sim._enable_utf8()
+
+    # Enable replay logging if requested
+    if enable_replay:
+        sim.enable_replay(capture_interval=1)
+        print("Replay logging enabled — every tick will be recorded.")
+
+    # Enable observer if requested
+    if observe_entity_id is not None:
+        sim.enable_observer(observe_entity_id)
+        print(f"Observer attached to entity #{observe_entity_id}")
+
     state = SimState(sim)
 
     # Initial state broadcast

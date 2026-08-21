@@ -22,6 +22,8 @@ from simplife.world import World, Terrain, PheromoneType
 from simplife.entity import Entity, Species, SPECIES_CONFIG
 from simplife.memory import MemType
 from simplife.colony import Colony, Queen, Ant
+from simplife.replay import ReplayLogger
+from simplife.observer import EntityObserver
 
 if TYPE_CHECKING:
     pass
@@ -85,6 +87,14 @@ class Simulation:
 
         # Ant colonies
         self.colonies: list[Colony] = []
+
+        # Replay system
+        self.replay_logger: ReplayLogger | None = None
+        self.replay_mode: bool = False  # if True, read from replay instead of simulating
+        self._replay_index: int = 0
+
+        # Observer system
+        self.observer: EntityObserver | None = None
 
         # Memory stats over time
         self.memory_stats_history: dict[str, list[float]] = {
@@ -170,6 +180,15 @@ class Simulation:
         finally:
             self._render_final_stats()
 
+    def enable_replay(self, capture_interval: int = 1) -> None:
+        """Enable replay logging."""
+        self.replay_logger = ReplayLogger(self, capture_interval=capture_interval)
+
+    def enable_observer(self, entity_id: int) -> None:
+        """Enable observation of a specific entity."""
+        self.observer = EntityObserver(entity_id)
+        self.observer.attach(self)
+
     def step(self) -> None:
         """Advance simulation by one tick."""
         self.tick_count += 1
@@ -209,6 +228,10 @@ class Simulation:
             if action:
                 actions_this_tick.append(action)
                 self._resolve_action(action, new_entities, dead_this_tick)
+
+        # Observer pre-action: log the entity's state before acting
+        if self.observer and self.observer.active:
+            self.observer.tick(self)
 
         # Colony ticks
         for colony in self.colonies:
@@ -257,6 +280,14 @@ class Simulation:
         # Remove dead entities
         self.entities = [e for e in self.entities if e.alive]
 
+        # Replay: capture this tick's state
+        if self.replay_logger:
+            self.replay_logger.log_tick()
+
+        # Observer post-action: log memory changes after decay
+        if self.observer and self.observer.active:
+            self.observer.tick(self)
+
         # Record population (including colony workers)
         pop = self._population_counts()
         total_ants = sum(c.total_workers_alive for c in self.colonies)
@@ -302,6 +333,12 @@ class Simulation:
         dead_this_tick: list[Entity],
     ) -> None:
         """Resolve an entity's action."""
+        # Log to observer if this is the observed entity
+        if self.observer and self.observer.active:
+            ent = action.get("entity") or action.get("attacker") or action.get("parent1")
+            if ent and hasattr(ent, 'id') and ent.id == self.observer.target_id:
+                self.observer.log_action(action)
+
         atype = action["type"]
 
         if atype == "move":

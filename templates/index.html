@@ -27,6 +27,39 @@
   .header label { color: var(--dim); font-size: 11px; }
   .header select { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 12px; }
 
+  /* Replay controls */
+  .replay-bar { grid-column: 1 / -1; display: none; align-items: center; gap: 12px; padding: 6px 16px; background: #1c2128; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .replay-bar.visible { display: flex; }
+  .replay-bar .replay-label { color: var(--accent); font-weight: 700; white-space: nowrap; }
+  .replay-bar input[type=range] { flex: 1; accent-color: var(--accent); }
+  .replay-bar .replay-tick { color: var(--text); font-family: monospace; min-width: 100px; }
+  .replay-bar button { background: var(--border); color: var(--text); border: none; border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 11px; }
+  .replay-bar button:hover { background: #484f58; }
+  .replay-bar button.active { background: var(--accent); color: #000; }
+
+  /* Observer timeline */
+  .observer-panel { display: none; flex-direction: column; border-top: 1px solid var(--border); max-height: 260px; overflow: hidden; }
+  .observer-panel.visible { display: flex; }
+  .observer-panel h3 { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 14px 4px; }
+  .observer-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; padding: 4px 14px 8px; font-size: 11px; }
+  .observer-summary .os-label { color: var(--dim); }
+  .observer-summary .os-value { color: var(--text); font-weight: 600; }
+  .observer-timeline { flex: 1; overflow-y: auto; padding: 0 14px 10px; }
+  .observer-timeline .obs-ev { display: flex; gap: 8px; padding: 3px 0; font-size: 11px; border-bottom: 1px solid rgba(48,54,61,0.5); align-items: flex-start; }
+  .observer-timeline .obs-tick { color: var(--dim); font-family: monospace; min-width: 40px; flex-shrink: 0; }
+  .observer-timeline .obs-type { font-weight: 700; min-width: 70px; flex-shrink: 0; }
+  .observer-timeline .obs-type.action { color: var(--accent); }
+  .observer-timeline .obs-type.memory { color: var(--green); }
+  .observer-timeline .obs-type.decision { color: var(--yellow); }
+  .observer-timeline .obs-type.death { color: var(--red); }
+  .observer-timeline .obs-type.state { color: var(--magenta); }
+  .observer-timeline .obs-type.share { color: var(--cyan); }
+  .observer-timeline .obs-desc { color: var(--text); flex: 1; }
+  .observer-timeline .obs-reason { color: var(--dim); font-style: italic; font-size: 10px; }
+  .observer-timeline .obs-state { color: var(--dim); font-family: monospace; font-size: 10px; white-space: nowrap; }
+  .observer-energy-bar { padding: 4px 14px; }
+  .observer-energy-bar .bar-track { height: 4px; }
+
   /* Main area */
   .main { display: flex; flex-direction: column; overflow: hidden; }
   .world-wrap { flex: 1; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #000; }
@@ -95,6 +128,8 @@
     <div class="controls">
       <button id="btnPause" onclick="togglePause()">Pause</button>
       <button onclick="resetSim()">Reset</button>
+      <button id="btnReplay" onclick="toggleReplayMode()" title="Enable replay recording">Replay</button>
+      <button id="btnObserve" onclick="toggleObserveMode()" title="Observe entity decisions">Observe</button>
       <label>Speed</label>
       <select id="speedSel" onchange="setSpeed(this.value)">
         <option value="200">Slow</option>
@@ -103,6 +138,15 @@
         <option value="5">Turbo</option>
       </select>
     </div>
+  </div>
+  <div class="replay-bar" id="replayBar">
+    <span class="replay-label">REPLAY</span>
+    <button id="replayPlayBtn" onclick="replayPlayPause()" title="Play/Pause replay">Play</button>
+    <button onclick="replayStep(-1)" title="Step back">&lt;</button>
+    <button onclick="replayStep(1)" title="Step forward">&gt;</button>
+    <input type="range" id="replaySlider" min="0" max="0" value="0" oninput="replaySeek(parseInt(this.value))">
+    <span class="replay-tick" id="replayTickLabel">Tick 0 / 0</span>
+    <button onclick="replayExport()" title="Export replay as JSON">Export</button>
   </div>
   <div class="main">
     <div class="world-wrap">
@@ -137,6 +181,15 @@
       <div class="inspector" id="inspector">
         <div class="empty">Click any creature to inspect its memories.</div>
       </div>
+    </div>
+    <div class="section observer-panel" id="observerPanel">
+      <h3>Observer Timeline</h3>
+      <div class="observer-summary" id="observerSummary"></div>
+      <div class="observer-energy-bar">
+        <div class="bar-label"><span>Observed Energy</span><span id="obsEnergyLabel">0/0</span></div>
+        <div class="bar-track"><div class="bar-fill" id="obsEnergyBar" style="width:0%;background:#3fb950"></div></div>
+      </div>
+      <div class="observer-timeline" id="observerTimeline"></div>
     </div>
   </div>
 </div>
@@ -342,7 +395,7 @@ class Entity {
     if (this.age > this.maxAge * 0.7) this.health -= 0.002;
     if (this.age > this.maxAge * 0.9) this.energy -= 1;
     if (this.isNight() && this.species !== 'OWL') this.energy -= 0.3;
-    if (this.energy <= 0 || this.health <= 0) { this.alive = false; return; }
+    if (this.energy <= 0 || this.health <= 0) { this.alive = false; if (observeEnabled && observeTargetId === this.id) addObsEvent('DEATH', `${this.species}#${this.id} died at (${this.x},${this.y})`, `Energy=${this.energy.toFixed(1)}, Health=${this.health.toFixed(2)}, Age=${this.age}`); return; }
 
     // Encode memories
     this._updateMemory(nearby);
@@ -378,6 +431,12 @@ class Entity {
     }
   }
 
+  _obs(type, desc, reasoning) {
+    if (observeEnabled && observeTargetId === this.id) {
+      addObsEvent(type, desc, reasoning);
+    }
+  }
+
   _decide(nearby) {
     // 1. Flee
     const threats = nearby.filter(o => o.id !== this.id && this.isThreat(o) && this.dist(o) < 4 + Math.round(this.traits.int * 2));
@@ -385,12 +444,16 @@ class Entity {
       if (threats.length) {
         const worst = threats.reduce((a, b) => a.traits.str < b.traits.str ? a : b);
         this.memory.encode('SPATIAL_DANGER', {x: worst.x, y: worst.y, tid: worst.id}, -0.7);
+        this._obs('ACTION', `Fleeing ${worst.species}#${worst.id} at (${worst.x},${worst.y})`, `Threat detected: STR=${worst.traits.str.toFixed(2)}, dist=${this.dist(worst)}`);
         this.tryMove(this.sign(this.x - worst.x), this.sign(this.y - worst.y));
         return;
       }
       // Flee from remembered danger
       const mig = this.memory.recall('MIGRATION', 0.1).find(m => Math.abs(m.content.x-this.x)+Math.abs(m.content.y-this.y) > 3);
-      if (mig) this.moveToward(mig.content.x, mig.content.y);
+      if (mig) {
+        this._obs('DECISION', `Fleeing remembered danger, heading to (${mig.content.x},${mig.content.y})`, `Fear score=${this.memory.fearAt(this.x, this.y).toFixed(2)}`);
+        this.moveToward(mig.content.x, mig.content.y);
+      }
       return;
     }
 
@@ -405,10 +468,14 @@ class Entity {
           this.memory.encode('SPATIAL_DANGER', {x: target.x, y: target.y, tid: this.id}, -0.8);
           if (target.energy <= 0 || target.health <= 0) {
             target.alive = false; this.energy = Math.min(this.maxE, this.energy + 40); this.kills++;
+            this._obs('ACTION', `Killed ${target.species}#${target.id}`, `DMG=${(dmg*3).toFixed(1)}, +40 energy`);
             eventLog.push({ type: 'kill', text: `${this.char}#${this.id} killed ${target.char}#${target.id}` });
+          } else {
+            this._obs('ACTION', `Attacked ${target.species}#${target.id}`, `DMG=${(dmg*3).toFixed(1)}, target HP=${Math.round(target.health*100)}%`);
           }
           return;
         }
+        this._obs('DECISION', `Hunting ${target.species}#${target.id} (dist=${this.dist(target)})`, `STR=${this.traits.str.toFixed(2)}, pursuing`);
         this.moveToward(target.x, target.y);
         return;
       }
@@ -422,6 +489,7 @@ class Entity {
       this.energy = Math.min(this.maxE, this.energy + amt * 15);
       this.foodEaten += amt;
       this.memory.encode('SPATIAL_FOOD', {x: this.x, y: this.y, q: cell}, 0.5);
+      this._obs('ACTION', `Ate ${amt.toFixed(1)} food at (${this.x},${this.y})`, `Energy ${Math.round(this.energy)}/${this.maxE}`);
       return;
     }
     if (this.energy < this.maxE * 0.7) {
@@ -431,6 +499,7 @@ class Entity {
       if (foods.length) {
         const best = foods.reduce((a, b) => (a.content.q*a.strength > b.content.q*b.strength) ? a : b);
         if (best.content.x !== this.x || best.content.y !== this.y) {
+          this._obs('DECISION', `Moving to remembered food at (${best.content.x},${best.content.y})`, `Memory strength=${best.strength.toFixed(2)}, food quality=${best.content.q?.toFixed(1)}`);
           this.moveToward(best.content.x, best.content.y);
           return;
         }
@@ -445,7 +514,10 @@ class Entity {
         const target = allies[this.rng.irange(0, allies.length)];
         const shared = this.memory.shareWith(target.memory, 2);
         this.sharedMem += shared; target.sharedMem += shared;
-        if (shared > 0) eventLog.push({ type: 'share', text: `${this.char}#${this.id} shared ${shared} mem with ${target.char}#${target.id}` });
+        if (shared > 0) {
+          this._obs('ACTION', `Shared ${shared} memories with ${target.species}#${target.id}`, `SOC=${this.traits.soc.toFixed(2)}, both have ${shared} common memories`);
+          eventLog.push({ type: 'share', text: `${this.char}#${this.id} shared ${shared} mem with ${target.char}#${target.id}` });
+        }
         return;
       }
     }
@@ -463,6 +535,7 @@ class Entity {
         child.energy = child.maxE * 0.6;
         entities.push(child);
         this.children++; mate.children++;
+        this._obs('ACTION', `Reproduced with ${mate.species}#${mate.id} -> child #${child.id}`, `Parent INT=${smarter.traits.int.toFixed(2)}, child at (${child.x},${child.y})`);
         eventLog.push({ type: 'birth', text: `New ${child.char}#${child.id} born at (${child.x},${child.y})` });
         return;
       }
@@ -471,6 +544,7 @@ class Entity {
     // 6. Migrate / Explore
     const mig = this.memory.recall('MIGRATION', 0.1).find(m => Math.abs(m.content.x-this.x)+Math.abs(m.content.y-this.y) > 3);
     if (mig && this.energy < this.maxE * 0.8) {
+      this._obs('DECISION', `Migrating to (${mig.content.x},${mig.content.y})`, `Memory density=${mig.content.density?.toFixed(1)}, strength=${mig.strength.toFixed(2)}`);
       this.moveToward(mig.content.x, mig.content.y);
       return;
     }
@@ -1013,13 +1087,468 @@ worldCanvas.addEventListener('mousemove', ev => {
 });
 worldCanvas.addEventListener('mouseleave', () => tooltip.style.display = 'none');
 
+// ── Replay System ──────────────────────────────────────────────
+let replayEnabled = false;
+let replayFrames = [];  // [{tick, entities:[{id,species,x,y,energy,health,age,memoryCount,traits,...}], food, pop, events, colonies, pheromones, timeOfDay, season, isNight}]
+let replayPlaying = false;
+let replayIndex = 0;
+let replayInterval = null;
+
+function toggleReplayMode() {
+  replayEnabled = !replayEnabled;
+  const btn = document.getElementById('btnReplay');
+  const bar = document.getElementById('replayBar');
+  if (replayEnabled) {
+    btn.classList.add('active');
+    bar.classList.add('visible');
+    replayFrames = [];
+    replayIndex = 0;
+    addReplayFrame();
+  } else {
+    btn.classList.remove('active');
+    bar.classList.remove('visible');
+    replayPlaying = false;
+    if (replayInterval) { clearInterval(replayInterval); replayInterval = null; }
+  }
+}
+
+function addReplayFrame() {
+  if (!replayEnabled) return;
+  const frame = {
+    tick: tick,
+    day: day,
+    season: season,
+    tod: tod,
+    isNight: tod < 0.2 || tod > 0.8,
+    entities: entities.filter(e => e.alive).map(e => ({
+      id: e.id, species: e.species, char: e.char,
+      x: e.x, y: e.y,
+      energy: Math.round(e.energy * 10) / 10,
+      health: Math.round(e.health * 1000) / 1000,
+      age: e.age, maxAge: e.maxAge,
+      traits: { ...e.traits },
+      memoryCount: e.memory.memories.length,
+      memoryCapacity: e.memory.capacity,
+      topMemories: [...e.memory.memories].sort((a,b) => b.strength - a.strength).slice(0, 5).map(m => ({
+        type: m.type, strength: Math.round(m.strength * 1000) / 1000,
+        valence: Math.round(m.valence * 100) / 100,
+        desc: memDesc(m)
+      })),
+      kills: e.kills, children: e.children,
+      foodEaten: Math.round(e.foodEaten * 10) / 10,
+      sharedMem: e.sharedMem,
+    })),
+    colonies: colonies.map(c => ({
+      id: c.id, nestX: c.nestX, nestY: c.nestY,
+      alive: c.alive, foodReserves: Math.round(c.foodReserves),
+      queenAlive: c.queenAlive, queenAge: c.queenAge,
+      workers: c.workers.filter(w => w.alive).map(w => ({
+        id: w.id, x: w.x, y: w.y,
+        energy: Math.round(w.energy), carryingFood: Math.round(w.carryingFood * 10) / 10,
+      })),
+      totalGathered: Math.round(c.totalGathered),
+    })),
+    food: food.map(row => row.map(v => Math.round(v * 10) / 10)),
+    events: eventLog.slice(-10).map(e => e.text),
+    popHistory: JSON.parse(JSON.stringify(popHistory)),
+  };
+  replayFrames.push(frame);
+  // Update slider
+  const slider = document.getElementById('replaySlider');
+  slider.max = replayFrames.length - 1;
+  slider.value = replayFrames.length - 1;
+  replayIndex = replayFrames.length - 1;
+  updateReplayLabel();
+}
+
+function memDesc(m) {
+  const c = m.content;
+  if (m.type === 'SPATIAL_FOOD') return `food@(${c.x},${c.y}) q=${c.q?.toFixed(0)}`;
+  if (m.type === 'SPATIAL_DANGER') return `danger@(${c.x},${c.y})`;
+  if (m.type === 'SOCIAL_FRIEND') return `friend#${c.entity_id}`;
+  if (m.type === 'SOCIAL_ENEMY') return `enemy#${c.entity_id}`;
+  if (m.type === 'MIGRATION') return `migrate@(${c.x},${c.y}) d=${c.density?.toFixed(0)}`;
+  if (m.type === 'MATE') return `mate@(${c.x},${c.y})`;
+  return JSON.stringify(c).slice(0, 40);
+}
+
+function replaySeek(idx) {
+  if (!replayFrames.length) return;
+  replayIndex = Math.max(0, Math.min(replayFrames.length - 1, idx));
+  document.getElementById('replaySlider').value = replayIndex;
+  updateReplayLabel();
+  renderReplayFrame(replayFrames[replayIndex]);
+}
+
+function replayStep(dir) {
+  replaySeek(replayIndex + dir);
+}
+
+function replayPlayPause() {
+  replayPlaying = !replayPlaying;
+  const btn = document.getElementById('replayPlayBtn');
+  btn.textContent = replayPlaying ? 'Pause' : 'Play';
+  btn.classList.toggle('active', replayPlaying);
+  if (replayPlaying) {
+    replayInterval = setInterval(() => {
+      if (replayIndex < replayFrames.length - 1) {
+        replaySeek(replayIndex + 1);
+      } else {
+        replayPlaying = false;
+        document.getElementById('replayPlayBtn').textContent = 'Play';
+        document.getElementById('replayPlayBtn').classList.remove('active');
+        clearInterval(replayInterval);
+      }
+    }, 100);
+  } else if (replayInterval) {
+    clearInterval(replayInterval);
+  }
+}
+
+function updateReplayLabel() {
+  const frame = replayFrames[replayIndex];
+  document.getElementById('replayTickLabel').textContent =
+    frame ? `Tick ${frame.tick} / ${replayFrames[replayFrames.length-1].tick} (${replayIndex+1}/${replayFrames.length})` : 'No frames';
+}
+
+function renderReplayFrame(frame) {
+  // Render the world at a past frame
+  const cw = worldCanvas.parentElement.clientWidth;
+  const ch = worldCanvas.parentElement.clientHeight - 4;
+  const cell = Math.max(4, Math.min(Math.floor(cw/W), Math.floor(ch/H)));
+  worldCanvas.width = W * cell; worldCanvas.height = H * cell;
+  const imgData = wCtx.createImageData(W * cell, H * cell);
+  const d = imgData.data;
+  const isNight = frame.isNight;
+
+  // Draw terrain + food
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const t = terrain[y][x], f = frame.food[y][x];
+    const base = TERRAIN_BASE[t], foodC = TERRAIN_FOOD[t];
+    const ff = Math.min(1, f / 8) * 0.4;
+    let r = base[0] + (foodC[0] - base[0]) * ff;
+    let g = base[1] + (foodC[1] - base[1]) * ff;
+    let b = base[2] + (foodC[2] - base[2]) * ff;
+    if (isNight) { r *= 0.4; g *= 0.4; b *= 0.5; }
+    for (let py = 0; py < cell; py++) for (let px = 0; px < cell; px++) {
+      const idx = ((y*cell+py)*W*cell + (x*cell+px)) * 4;
+      d[idx] = r; d[idx+1] = g; d[idx+2] = b; d[idx+3] = 255;
+    }
+  }
+  wCtx.putImageData(imgData, 0, 0);
+
+  // Draw colonies + ants from frame
+  for (const c of frame.colonies) {
+    const nx = c.nestX * cell + cell/2, ny = c.nestY * cell + cell/2;
+    const nr = Math.max(4, cell * 0.6);
+    wCtx.beginPath(); wCtx.arc(nx, ny, nr, 0, Math.PI*2);
+    wCtx.fillStyle = c.queenAlive ? '#1a5c2a' : '#5c1a1a';
+    wCtx.fill();
+    wCtx.fillStyle = '#fff'; wCtx.font = `bold ${Math.floor(cell*0.45)}px monospace`;
+    wCtx.textAlign = 'center'; wCtx.textBaseline = 'middle';
+    wCtx.fillText('N', nx, ny);
+    for (const a of c.workers) {
+      const ax = a.x * cell + cell/2, ay = a.y * cell + cell/2;
+      const ar = Math.max(1.5, cell * 0.2);
+      wCtx.beginPath(); wCtx.arc(ax, ay, ar, 0, Math.PI*2);
+      wCtx.fillStyle = a.carryingFood > 0 ? '#d29922' : '#39d353';
+      wCtx.fill();
+    }
+  }
+
+  // Draw entities from frame
+  for (const e of frame.entities) {
+    const color = SPECIES_COLORS[e.species];
+    const cx = e.x * cell + cell/2, cy = e.y * cell + cell/2;
+    const r = Math.max(2, cell * 0.35);
+    if (e.id === selectedId) { wCtx.beginPath(); wCtx.arc(cx, cy, r+4, 0, Math.PI*2); wCtx.fillStyle = 'rgba(255,255,255,0.25)'; wCtx.fill(); }
+    wCtx.beginPath(); wCtx.arc(cx, cy, r, 0, Math.PI*2);
+    wCtx.fillStyle = color; wCtx.fill();
+    if (cell >= 12) {
+      wCtx.fillStyle = '#000'; wCtx.font = `bold ${Math.floor(cell*0.5)}px monospace`;
+      wCtx.textAlign = 'center'; wCtx.textBaseline = 'middle';
+      wCtx.fillText(e.char, cx, cy);
+    }
+  }
+
+  // Update header
+  document.getElementById('hTick').textContent = frame.tick;
+  document.getElementById('hDay').textContent = frame.day;
+  document.getElementById('hSeason').textContent = SEASONS[frame.season];
+  document.getElementById('hTime').textContent = frame.isNight ? 'Night' : 'Day';
+  document.getElementById('hPop').textContent = frame.entities.length;
+
+  // Render events
+  const evEl = document.getElementById('eventLog');
+  evEl.innerHTML = frame.events.map(t => `<div class="ev">${t}</div>`).join('');
+
+  // Render entity inspector if selected
+  if (selectedId) {
+    const e = frame.entities.find(x => x.id === selectedId);
+    if (e) renderReplayInspector(e);
+  }
+}
+
+function renderReplayInspector(e) {
+  const color = SPECIES_COLORS[e.species];
+  const ePct = Math.round(e.energy / e.maxAge * 100);
+  const hPct = Math.round(e.health * 100);
+  const aPct = Math.round(e.age / e.maxAge * 100);
+  let html = `
+    <div class="ent-header">
+      <div class="ent-char" style="color:${color}">${e.char}</div>
+      <div class="ent-info">
+        <div class="name" style="color:${color}">${e.species}#${e.id}</div>
+        <div class="sub">(${e.x},${e.y}) Age ${e.age}/${e.maxAge}</div>
+      </div>
+    </div>
+    <div class="bar-wrap"><div class="bar-label"><span>Energy</span><span>${Math.round(e.energy)}/${Math.round(e.energy + 50)}</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${ePct}%;background:${ePct>30?'#3fb950':'#f85149'}"></div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>Health</span><span>${hPct}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${hPct}%;background:${hPct>30?'#3fb950':'#f85149'}"></div></div></div>
+    <div class="traits-grid">
+      ${['int','str','spd','soc','con'].map(k => `<div class="trait"><span class="trait-name">${k.toUpperCase()}</span><span>${e.traits[k].toFixed(2)}</span></div>`).join('')}
+      <div class="trait"><span class="trait-name">MEM</span><span>${e.memoryCount}/${e.memoryCapacity}</span></div>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin:4px 0;">
+      Food: ${e.foodEaten} Kills: ${e.kills} Children: ${e.children} Shared: ${e.sharedMem}
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin:6px 0 2px;">Memories (${e.memoryCount}):</div>
+    <div class="mem-list">`;
+  const iconMap = { SPATIAL_DANGER: ['danger', '\u26a0'], SPATIAL_FOOD: ['food', '\ud83c\udf3f'],
+    MIGRATION: ['migration', '\ud83e\udded'], MATE: ['mate', '\ud83d\udc95'],
+    SOCIAL_ENEMY: ['danger', '\ud83d\udc80'], SOCIAL_FRIEND: ['social', '\ud83d\udc64'] };
+  for (const m of e.topMemories) {
+    const [cls, icon] = iconMap[m.type] || ['social', '-'];
+    html += `<div class="mem-item"><div class="mem-icon ${cls}">${icon}</div>
+      <div class="mem-body"><div><span class="mem-type">${m.type}</span></div>
+      <div class="mem-desc">${m.desc}</div>
+      <div class="mem-bar"><div class="mem-bar-fill" style="width:${Math.round(m.strength*100)}%"></div></div></div></div>`;
+  }
+  html += '</div>';
+  inspector.innerHTML = html;
+}
+
+function replayExport() {
+  const data = JSON.stringify(replayFrames, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `simplife_replay_${Date.now()}.json`;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+// ── Observer System ──────────────────────────────────────────────
+let observeEnabled = false;
+let observeTargetId = null;
+let observeTimeline = [];  // [{tick, type, desc, reasoning, energy, health, x, y, data}]
+let observeEnergyHistory = [];  // [{tick, energy}]
+let observeMemoryCountHistory = [];  // [{tick, count}]
+let observeStats = { actions: 0, memoriesEncoded: 0, memoriesShared: 0, memoriesForgotten: 0, distance: 0 };
+let observeLastEnergy = 0, observeLastMemCount = 0, observeLastX = 0, observeLastY = 0;
+
+function toggleObserveMode() {
+  observeEnabled = !observeEnabled;
+  const btn = document.getElementById('btnObserve');
+  const panel = document.getElementById('observerPanel');
+  if (observeEnabled) {
+    btn.classList.add('active');
+    panel.classList.add('visible');
+    observeTimeline = [];
+    observeEnergyHistory = [];
+    observeMemoryCountHistory = [];
+    observeStats = { actions: 0, memoriesEncoded: 0, memoriesShared: 0, memoriesForgotten: 0, distance: 0 };
+    // Auto-select first entity if none selected
+    if (!observeTargetId && entities.length) {
+      observeTargetId = entities[0].id;
+    }
+    if (observeTargetId) {
+      const e = entities.find(x => x.id === observeTargetId);
+      if (e) {
+        observeLastEnergy = e.energy;
+        observeLastMemCount = e.memory.memories.length;
+        observeLastX = e.x; observeLastY = e.y;
+        addObsEvent('DECISION', `Observer attached to ${e.species}#${e.id}`,
+          `Species: ${e.species}, Age: ${e.age}, Energy: ${Math.round(e.energy)}, INT: ${e.traits.int.toFixed(2)}`);
+      }
+    }
+    renderObserver();
+  } else {
+    btn.classList.remove('active');
+    panel.classList.remove('visible');
+    observeTargetId = null;
+  }
+}
+
+function observeEntity(eid) {
+  if (!observeEnabled) return;
+  observeTargetId = eid;
+  observeTimeline = [];
+  observeEnergyHistory = [];
+  observeMemoryCountHistory = [];
+  observeStats = { actions: 0, memoriesEncoded: 0, memoriesShared: 0, memoriesForgotten: 0, distance: 0 };
+  const e = entities.find(x => x.id === eid);
+  if (e) {
+    observeLastEnergy = e.energy;
+    observeLastMemCount = e.memory.memories.length;
+    observeLastX = e.x; observeLastY = e.y;
+    addObsEvent('DECISION', `Observing ${e.species}#${e.id} at (${e.x},${e.y})`,
+      `Traits: INT=${e.traits.int.toFixed(2)} STR=${e.traits.str.toFixed(2)} SPD=${e.traits.spd.toFixed(2)} SOC=${e.traits.soc.toFixed(2)}`);
+  }
+  renderObserver();
+}
+
+function addObsEvent(type, desc, reasoning, data) {
+  observeTimeline.push({ tick, type, desc, reasoning: reasoning || '', data: data || {},
+    energy: 0, health: 0, x: 0, y: 0 });
+  if (observeTimeline.length > 200) observeTimeline = observeTimeline.slice(-200);
+}
+
+function observeTick() {
+  if (!observeEnabled || !observeTargetId) return;
+  const e = entities.find(x => x.id === observeTargetId);
+  if (!e || !e.alive) {
+    if (observeTargetId && observeTimeline.length === 0) {
+      addObsEvent('DEATH', `Entity #${observeTargetId} died or not found`, 'No longer alive');
+      renderObserver();
+    }
+    return;
+  }
+
+  // Track memory changes
+  const curMemCount = e.memory.memories.length;
+  if (curMemCount > observeLastMemCount) {
+    const newMems = e.memory.memories.slice(observeLastMemCount);
+    for (const m of newMems) {
+      observeStats.memoriesEncoded++;
+      addObsEvent('MEMORY', `New ${m.type}: ${memDesc(m)}`,
+        `Strength=${m.strength.toFixed(2)} Valence=${m.valence.toFixed(2)}`);
+    }
+  } else if (curMemCount < observeLastMemCount) {
+    observeStats.memoriesForgotten += observeLastMemCount - curMemCount;
+  }
+
+  // Track energy changes
+  const eDelta = e.energy - observeLastEnergy;
+  if (Math.abs(eDelta) > 2) {
+    const reason = eDelta > 0 ? 'ate food' : 'used energy';
+    addObsEvent('STATE', `Energy ${eDelta > 0 ? '+' : ''}${eDelta.toFixed(1)} (${reason})`,
+      `Energy now ${e.energy.toFixed(0)}/${e.maxE}`);
+  }
+
+  // Track position
+  const dx = Math.abs(e.x - observeLastX), dy = Math.abs(e.y - observeLastY);
+  if (dx + dy > 0) observeStats.distance += dx + dy;
+
+  // Record history
+  observeEnergyHistory.push({ tick, energy: e.energy });
+  observeMemoryCountHistory.push({ tick, count: curMemCount });
+  if (observeEnergyHistory.length > 300) observeEnergyHistory = observeEnergyHistory.slice(-300);
+  if (observeMemoryCountHistory.length > 300) observeMemoryCountHistory = observeMemoryCountHistory.slice(-300);
+
+  observeLastEnergy = e.energy;
+  observeLastMemCount = curMemCount;
+  observeLastX = e.x; observeLastY = e.y;
+}
+
+function observeAction(action) {
+  if (!observeEnabled || !observeTargetId) return;
+  // Check if this action involves the observed entity
+  const ent = action.entity || action.attacker || action.parent1;
+  if (!ent || ent.id !== observeTargetId) return;
+
+  observeStats.actions++;
+  const atype = action.type;
+  let desc = '', reasoning = '';
+
+  if (atype === 'move') {
+    desc = `Move (${action.dx > 0 ? '+' : ''}${action.dx}, ${action.dy > 0 ? '+' : ''}${action.dy})`;
+    reasoning = ent.energy < ent.maxE * 0.5 ? 'searching for food' : 'exploring';
+  } else if (atype === 'eat') {
+    desc = `Eat ${action.amount.toFixed(1)} food`;
+    reasoning = `Energy was ${ent.energy.toFixed(0)}/${ent.maxE}`;
+  } else if (atype === 'attack') {
+    desc = `Attack #${action.defender?.id || '?'}`;
+    reasoning = `STR=${ent.traits.str.toFixed(2)}, hunting`;
+  } else if (atype === 'share_memories') {
+    desc = `Share with #${action.target?.id || '?'}`;
+    observeStats.memoriesShared++;
+    reasoning = `SOC=${ent.traits.soc.toFixed(2)}`;
+  } else if (atype === 'reproduce') {
+    desc = `Reproduce with #${action.parent2?.id || '?'}`;
+    reasoning = `Energy ${ent.energy.toFixed(0)} > ${ent.repE}`;
+  } else if (atype === 'flee') {
+    desc = `Flee (${action.dx > 0 ? '+' : ''}${action.dx}, ${action.dy > 0 ? '+' : ''}${action.dy})`;
+    reasoning = 'Escaping threat';
+  } else if (atype === 'migrate') {
+    desc = `Migrate to (${action.tx},${action.ty})`;
+    reasoning = action.reason || 'Following memory';
+  }
+
+  if (desc) {
+    addObsEvent('ACTION', desc, reasoning);
+    renderObserver();
+  }
+}
+
+function renderObserver() {
+  const panel = document.getElementById('observerPanel');
+  if (!observeEnabled || !panel.classList.contains('visible')) return;
+
+  const e = entities.find(x => x.id === observeTargetId);
+  const summary = document.getElementById('observerSummary');
+  const timeline = document.getElementById('observerTimeline');
+
+  if (e) {
+    const ePct = Math.round(e.energy / e.maxE * 100);
+    document.getElementById('obsEnergyLabel').textContent = `${Math.round(e.energy)}/${e.maxE}`;
+    const bar = document.getElementById('obsEnergyBar');
+    bar.style.width = ePct + '%';
+    bar.style.background = ePct > 30 ? '#3fb950' : '#f85149';
+
+    summary.innerHTML = `
+      <span class="os-label">Target</span><span class="os-value" style="color:${SPECIES_COLORS[e.species]}">${e.species}#${e.id}</span>
+      <span class="os-label">Position</span><span class="os-value">(${e.x},${e.y})</span>
+      <span class="os-label">Actions</span><span class="os-value">${observeStats.actions}</span>
+      <span class="os-label">Memories In</span><span class="os-value" style="color:var(--green)">${observeStats.memoriesEncoded}</span>
+      <span class="os-label">Shared</span><span class="os-value" style="color:var(--cyan)">${observeStats.memoriesShared}</span>
+      <span class="os-label">Forgotten</span><span class="os-value" style="color:var(--red)">${observeStats.memoriesForgotten}</span>
+      <span class="os-label">Distance</span><span class="os-value">${observeStats.distance}</span>
+      <span class="os-label">Mem Bank</span><span class="os-value">${e.memory.memories.length}/${e.memory.capacity}</span>
+    `;
+  }
+
+  // Render timeline (newest first, last 50)
+  const events = observeTimeline.slice(-50).reverse();
+  const typeClass = { ACTION: 'action', MEMORY: 'memory', DECISION: 'decision', DEATH: 'death', STATE: 'state', SHARE: 'share' };
+  timeline.innerHTML = events.map(ev =>
+    `<div class="obs-ev">
+      <span class="obs-tick">t${ev.tick}</span>
+      <span class="obs-type ${typeClass[ev.type] || ''}">${ev.type}</span>
+      <span class="obs-desc">${ev.desc}</span>
+      ${ev.reasoning ? `<span class="obs-reason">${ev.reasoning}</span>` : ''}
+    </div>`
+  ).join('');
+}
+
 // ── Controls ─────────────────────────────────────────────────────
 function togglePause() { paused = !paused; render(); }
-function resetSim() { initWorld(); render(); }
+function resetSim() {
+  initWorld();
+  if (replayEnabled) { replayFrames = []; replayIndex = 0; addReplayFrame(); }
+  if (observeEnabled) { observeTimeline = []; observeEnergyHistory = []; observeMemoryCountHistory = []; observeStats = { actions: 0, memoriesEncoded: 0, memoriesShared: 0, memoriesForgotten: 0, distance: 0 }; }
+  render();
+}
 function setSpeed(v) { speed = parseInt(v); if (tickInterval) { clearInterval(tickInterval); tickInterval = setInterval(tickFn, speed); } }
 
 function tickFn() {
-  if (!paused) { simStep(); render(); }
+  if (!paused) {
+    simStep();
+    observeTick();
+    if (replayEnabled && tick % 5 === 0) addReplayFrame();  // capture every 5 ticks to save memory
+    render();
+    if (observeEnabled) renderObserver();
+  }
 }
 
 // ── Init ─────────────────────────────────────────────────────────

@@ -40,6 +40,8 @@ def main() -> int:
     parser.add_argument("--no-memory", action="store_true", help="Hide memory UI")
     parser.add_argument("--web", action="store_true", help="Launch browser-based visualization")
     parser.add_argument("--port", type=int, default=8765, help="Web server port")
+    parser.add_argument("--replay", action="store_true", help="Enable replay logging (records every tick)")
+    parser.add_argument("--observe", type=int, default=None, metavar="ID", help="Observe entity with this ID")
     args = parser.parse_args()
 
     if args.web:
@@ -50,8 +52,18 @@ def main() -> int:
             port=args.port,
             speed=args.speed / 1000.0,
             max_ticks=args.ticks,
+            enable_replay=args.replay,
+            observe_entity_id=args.observe,
         )
         return 0
+
+    if args.replay:
+        sim.enable_replay(capture_interval=1)
+        print("Replay logging enabled — every tick will be recorded.")
+
+    if args.observe is not None:
+        sim.enable_observer(args.observe)
+        print(f"Observer attached to entity #{args.observe}")
 
     sim = Simulation(
         width=args.width,
